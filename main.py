@@ -4,8 +4,9 @@ from pydantic import BaseModel
 from google import genai
 
 # 1. Configura o novo cliente do Gemini
-GOOGLE_API_KEY = os.environ.get("AQ.Ab8RN6LdIL6K07cV8ob34Luuygwnr8IVRWl0P3gCIcfU1cNXXQ")
+GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
+
 
 app = FastAPI()
 
