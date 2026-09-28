@@ -15,45 +15,29 @@ class OrcamentoRequest(BaseModel):
     estado: str
     palavras_chave: str
     quantidade: float
-
-# Base de dados simulada estruturada corretamente
-dados_sinapi_simulados = [
-    {
-        "codigo": "87528", 
-        "descricao": "ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO 9X19X19CM", 
-        "unidade": "M²", 
-        "preco_unitario": 45.50
-    },
-    {
-        "codigo": "87529", 
-        "descricao": "EMBOÇO OU MASSA ÚNICA PARA RECEBIMENTO DE PINTURA", 
-        "unidade": "M²", 
-        "preco_unitario": 22.10
-    },
-    {
-        "codigo": "88267", 
-        "descricao": "CARPINTEIRO DE FORMAS WITH ENCARGOS COMPLEMENTARES", 
-        "unidade": "H", 
-        "preco_unitario": 25.00
-    }
-]
+    desonerado: bool    
 
 @app.post("/calcular-orcamento")
 async def calcular_orcamento(request: OrcamentoRequest):
-    contexto_sinapi = str(dados_sinapi_simulados)
+    regime = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
+    # Nova instrução cirúrgica para o Gemini agir como banco de dados analítico e engenheiro
     prompt = f"""
-    Você é um engenheiro de custos especialista em construção civil e na tabela SINAPI.
-    O usuário quer um orçamento para o estado {request.estado}.
-    Ele buscou por: "{request.palavras_chave}" e quer construir uma quantidade de {request.quantidade}.
+    Você é um Engenheiro de Custos sênior especialista em auditoria de orçamentos e na base de dados oficial do SINAPI da Caixa Econômica Federal.
+    O usuário precisa de um orçamento para o estado: {request.estado} sob o regime de encargos: {regime}.
+    Ele buscou pelo serviço: "{request.palavras_chave}" para executar uma quantidade de: {request.quantidade}.
     
-    Com base APENAS nas opções disponíveis na tabela SINAPI abaixo:
-    {contexto_sinapi}
-    
-    Faça o seguinte:
-    1. Identifique qual código melhor se aplica ao pedido dele.
-    2. Calcule o valor total (Preço Unitário x Quantidade).
-    3. Retorne um relatório curto e profissional formatado em tópicos simples explicando o cálculo.
+    Com base no seu conhecimento atualizado das referências analíticas oficiais do SINAPI, faça:
+    1. Identifique o código numérico oficial do SINAPI da composição mais adequada.
+    2. Apresente os dados da COMPOSIÇÃO PRINCIPAL: Código, Descrição Completa, Unidade de medida e Valor Unitário.
+    3. Apresente a memória de cálculo do VALOR TOTAL (Valor Unitário x {request.quantidade}).
+    4. Liste detalhadamente a composição analítica por dentro (todos os INSUMOS e MÃO DE OBRA utilizados):
+       - Nome do Insumo/Profissional (Ex: Cimento, Servente, Pedreiro)
+       - Quantidade calculada proporcional para atender {request.quantidade} unidades do serviço.
+       - Unidade de medida do insumo (KG, H, M³, etc).
+       - Preço unitário e Preço Total daquele insumo na estrutura.
+       
+    Formate o relatório final em Markdown de forma muito visual, utilizando tabelas limpas para separar a Composição dos Insumos internos.
     """
     
     resposta = client.models.generate_content(
