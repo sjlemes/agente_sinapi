@@ -4,13 +4,13 @@ from fastapi import FastAPI, responses
 from pydantic import BaseModel
 from google import genai
 
-# Bibliotecas necessárias para a geração do PDF profissional
+# Importações corretas e completas da biblioteca ReportLab
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# 1. Configura o cliente do Gemini de forma segura
+# Configuração do cliente do Gemini usando a variável de ambiente do Render
 GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
@@ -31,7 +31,7 @@ async def calcular_orcamento(request: OrcamentoRequest):
     prompt = f"""
     Você é um Engenheiro de Custos sênior especialista em auditoria de orçamentos e na base de dados oficial do SINAPI da Caixa Econômica Federal.
     O usuário precisa de um orçamento para o estado: {request.estado} sob o regime de encargos: {regime}.
-    He buscou pelo serviço: "{request.palavras_chave}" para executar uma quantidade de: {request.quantidade}.
+    Ele buscou pelo serviço: "{request.palavras_chave}" para executar uma quantidade de: {request.quantidade}.
     
     Com base no seu conhecimento atualizado das referências analíticas oficiais do SINAPI, faça:
     1. Identifique o código numérico oficial do SINAPI da composição mais adequada.
@@ -79,7 +79,6 @@ async def gerar_pdf_orcamento(request: OrcamentoRequest):
     elementos.append(Paragraph("Relatório de Custos e Composições SINAPI", estilo_titulo))
     elementos.append(Spacer(1, 10))
     
-    # Montando uma tabela estruturada no PDF com os dados enviados pelo celular
     regime = "Desonerado" if request.desonerado else "Não Desonerado"
     dados_tabela = [
         ['Parâmetro', 'Valor Selecionado'],
@@ -89,7 +88,7 @@ async def gerar_pdf_orcamento(request: OrcamentoRequest):
         ['Regime Mão de Obra', regime]
     ]
     
-    # colWidths define a largura das colunas (Ex: 150 pontos para a primeira, 300 para a segunda)
+    # CORREÇÃO AQUI: Definido larguras numéricas explícitas (150 e 300 pontos) para acabar com o erro
     tabela_visual = Table(dados_tabela, colWidths=[150, 300])
     
     tabela_visual.setStyle(TableStyle([
