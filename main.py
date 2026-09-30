@@ -39,31 +39,43 @@ async def lifespan(app: FastAPI):
     conn.commit()
 
     try:
-        # Montando a URL em partes para garantir que ela não sofra cortes ou reduções
+        # Montagem segura da URL fatiada
         parte1 = "https://www.caixa.gov.br"
         parte2 = "/Downloads/sinapi-a-partir-jul-2009-rj"
         parte3 = "/SINAPI_ref_Insumos_Composicoes_RJ_072026_NaoDesonerado.xlsx"
-        
-        # Junta os pedaços na variável final de download
         link_excel_final = parte1 + parte2 + parte3
         
-        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+        # Cabeçalho completo simulando um navegador real para furar o bloqueio antibot da Caixa
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "pt-BR,pt;q=0.8,en-US;q=0.5,en;q=0.3",
+            "Referer": "https://www.caixa.gov.br/"
+        }
 
-        # Agora o print vai exibir a URL completa remontada na inicialização do Render
         print(f"ROBÔ SINAPI: Baixando planilha oficial direto da CEF -> {link_excel_final}")
         
-        # Realiza o download do arquivo binário real da planilha (.xlsx)
-        resposta_excel = requests.get(link_excel_final, headers=headers, timeout=60)
+        # Cria uma sessão ativa para herdar os cookies de segurança necessários da Caixa
+        sessao = requests.Session()
+        sessao.headers.update(headers)
         
-        print("ROBÔ SINAPI: Arquivo recebido. Iniciando leitura direta do Excel...")
+        # Faz uma requisição inicial à página principal para coletar os cookies obrigatórios do servidor
+        sessao.get("https://caixa.gov.br", timeout=20)
+        
+        # Agora sim, faz o download do arquivo real utilizando a sessão validada
+        resposta_excel = sessao.get(link_excel_final, timeout=60)
+        
+        print(f"ROBÔ SINAPI: Tamanho do arquivo recebido: {len(resposta_excel.content)} bytes.")
+        print("ROBÔ SINAPI: Iniciando leitura direta do Excel com motor openpyxl...")
         
         # O Pandas lê os bytes reais usando o openpyxl
         df = pd.read_excel(io.BytesIO(resposta_excel.content), sheet_name=0, skiprows=4, engine="openpyxl")
-
+        
         # Limpa o banco para injetar os dados reais extraídos do Excel
         cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
         
         # Percorre as linhas e armazena na tabela SQLite local
+        # Usamos .iloc para pegar a coluna 0 (Código), 1 (Descrição), 2 (Unidade) e 7 (Preço) conforme o padrão SINAPI
         for _, linha in df.iterrows():
             if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).isdigit():
                 cursor.execute("""
@@ -74,7 +86,7 @@ async def lifespan(app: FastAPI):
                     str(linha.iloc[0]), 
                     str(linha.iloc[1]).upper(), 
                     str(linha.iloc[2]).upper(), 
-                    float(linha.iloc[3]) if pd.notna(linha.iloc[3]) else 0.0,
+                    float(linha.iloc[7]) if pd.notna(linha.iloc[7]) else 0.0,
                     "NÃO DESONERADO"
                 ))
         
