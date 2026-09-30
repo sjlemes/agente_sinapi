@@ -40,70 +40,45 @@ async def lifespan(app: FastAPI):
 
     # CORREÇÃO AQUI: Mudado de 'try {' para 'try:' padrão do Python
     try:
-        # URL oficial do índice de planilhas públicas da Caixa Econômica Federal
-        url_indice = "https://www.caixa.gov.br/site/paginas/downloads.aspx"
+        # URL do link permanente da planilha oficial unificada em Excel da CEF
+        link_excel_final = "https://caixa.gov.br"
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
-        
-        # O BeautifulSoup entra na página para "raspar" os links dinâmicos do mês corrente
-        resposta_html = requests.get(url_indice, headers=headers, timeout=20)
-        soup = BeautifulSoup(resposta_html.text, 'html.parser')
-        
-        # Procura por links de download do SINAPI (.zip) correspondentes ao estado do Rio de Janeiro (Exemplo: RJ)
-        link_zip_final = None
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if "sinapi" in href.lower() and "rj" in href.lower() and href.endswith(".zip"):
-                link_zip_final = href
-                break
 
-        # Se o site da Caixa bloquear a raspagem, usamos o link permanente direto do repositório deles
-        if not link_zip_final:
-            print("ROBÔ SINAPI: Link dinâmico bloqueado pela CEF. Ativando link permanente direto...")
-            # Link oficial direto para o ZIP de relatórios mensais do SINAPI
-            link_zip_final = "downloads.caixa.gov.br"
-    
-        print(f"ROBÔ SINAPI: Baixando arquivo oficial da CEF -> {link_zip_final}")
+        print(f"ROBÔ SINAPI: Baixando planilha oficial direto da CEF -> {link_excel_final}")
         
-        # Faz o download do arquivo ZIP em fluxo (Streaming) para não sobrecarregar a memória RAM do Render
-        resposta_zip = requests.get(link_zip_final, headers=headers, stream=True, timeout=60)
-        zip_buffer = io.BytesIO()
-        for pedaco in resposta_zip.iter_content(chunk_size=4096):
-            if pedaco:
-                zip_buffer.write(pedaco)
+        # Baixa o arquivo Excel em fluxo de bytes
+        resposta_excel = requests.get(link_excel_final, headers=headers, timeout=60)
         
-        # Abre o arquivo ZIP e localiza apenas as planilhas das abas CSD / ISD
-        with zipfile.ZipFile(zip_buffer) as arquivo_zip:
-            for nome_arquivo in arquivo_zip.namelist():
-                if nome_arquivo.endswith(".xlsx") and not nome_arquivo.startswith("._"):
-                    print(f"ROBÔ SINAPI: Processando planilha analítica -> {nome_arquivo}")
-                    
-                    # Lê os dados em blocos leves usando o Pandas (Evita estourar o limite de 512MB RAM)
-                    dados_excel = arquivo_zip.read(nome_arquivo)
-                    df = pd.read_excel(io.BytesIO(dados_excel), sheet_name=0, skiprows=4) # Pula o cabeçalho decorativo da CEF
-                    
-                    # Filtra e padroniza as colunas essenciais do SINAPI (Código, Descrição, Unidade e Preço)
-                    cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
-                    for _, linha in df.iterrows():
-                        # Garante que lê apenas linhas que possuam códigos válidos do SINAPI
-                        if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).isdigit():
-                            cursor.execute("""
-                                INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            """, (
-                                "RJ", 
-                                str(linha.iloc[0]), 
-                                str(linha.iloc[1]).upper(), 
-                                str(linha.iloc[2]).upper(), 
-                                float(linha.iloc[3]) if pd.notna(linha.iloc[3]) else 0.0,
-                                "NÃO DESONERADO"
-                            ))
-                    conn.commit()
-                    print("ROBÔ SINAPI: Banco de dados SQLite populado com dados de engenharia reais!")
-                    break
+        print("ROBÔ SINAPI: Arquivo recebido. Iniciando leitura direta do Excel...")
+        
+        # CORREÇÃO DEFINITIVA: O Pandas lê o buffer binário do Excel direto, sem precisar de ZIP!
+        df = pd.read_excel(io.BytesIO(resposta_excel.content), sheet_name=0, skiprows=4)
+        
+        # Limpa o banco para injetar os dados reais extraídos das abas (ex: CSD)
+        cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
+        
+        # Percorre as colunas da planilha unificada da Caixa
+        for _, linha in df.iterrows():
+            if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).isdigit():
+                cursor.execute("""
+                    INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    "RJ", 
+                    str(linha.iloc[0]), 
+                    str(linha.iloc[1]).upper(), 
+                    str(linha.iloc[2]).upper(), 
+                    float(linha.iloc[3]) if pd.notna(linha.iloc[3]) else 0.0,
+                    "NÃO DESONERADO"
+                ))
+            
+            conn.commit()
+            print("ROBÔ SINAPI: Banco de dados SQLite populado com dados de engenharia REAIS do Excel!")
 
     except Exception as e:
-        print(f"ROBÔ SINAPI: Erro ao raspar site da Caixa: {str(e)}")
-        print("ROBÔ SINAPI: Ativando modo de segurança com dados locais pré-carregados para o App não parar.")
+        # Se houver erro ou instabilidade de rede na CEF, ativa a contingência automática
+        print(f"ROBÔ SINAPI: Erro ao processar Excel da Caixa: {str(e)}")
+        print("ROBÔ SINAPI: Ativando modo de segurança com dados locais para o App não parar.")
         cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
         dados_contingencia = [
             ("RJ", "87528", "ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO 9X19X19CM", "M²", 45.50, "NÃO DESONERADO"),
