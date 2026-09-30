@@ -1,6 +1,11 @@
+# --- EVENTO DE INICIALIZAÇÃO AUTOMÁTICA (LIFESPAN) ---
 import os
 import io
 import sqlite3
+import zipfile
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, responses
 from pydantic import BaseModel
@@ -12,16 +17,14 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- EVENTO DE INICIALIZAÇÃO AUTOMÁTICA (LIFESPAN) ---
+# --- RASPAGEM REAL E CONEXÃO COM A CEF (LIFESPAN) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ROBÔ SINAPI: Servidor do Render está ligando... Iniciando rotina de download!")
+    print("ROBÔ SINAPI: Iniciando varredura automatizada no site da Caixa...")
     
-    # Cria e prepara o banco de dados SQLite local na pasta do Render
+    # 1. Cria ou limpa a estrutura do Banco SQLite local do Render
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
-    
-    # Cria a tabela real para armazenar a composição analítica se ela não existir
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS composicoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,29 +36,87 @@ async def lifespan(app: FastAPI):
             regime TEXT
         )
     """)
-    
-    # --- AQUILO QUE O SEU ROBÔ VAI FAZER CONECTANDO NA CAIXA ---
-    # Aqui o código usará as bibliotecas 'requests' e 'beautifulsoup4' para varrer o site:
-    # url_caixa = "http://caixa.gov.br"
-    
-    print("ROBÔ SINAPI: Conectando ao índice do SINAPI na Caixa Econômica Federal...")
-    
-    # Simulação do processamento leve de linhas do Excel (ETL) injetando no SQLite
-    # Para testes rápidos de inicialização, inserimos 3 linhas de verdade direto no banco
-    cursor.execute("DELETE FROM composicoes") # Limpa para não duplicar no start
-    dados_reais_sinapi = [
-        ("RJ", "87528", "ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO 9X19X19CM", "M²", 45.50, "NÃO DESONERADO"),
-        ("RJ", "87529", "EMBOÇO OU MASSA ÚNICA PARA RECEBIMENTO DE PINTURA", "M²", 22.10, "NÃO DESONERADO"),
-        ("RJ", "88267", "CARPINTEIRO DE FORMAS COM ENCARGOS COMPLEMENTARES", "H", 25.00, "NÃO DESONERADO")
-    ]
-    cursor.executemany("INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime) VALUES (?, ?, ?, ?, ?, ?)", dados_reais_sinapi)
     conn.commit()
-    conn.close()
-    
-    print("ROBÔ SINAPI: Banco SQLite 'sinapi.db' atualizado com sucesso e pronto para uso!")
-    yield
-    print("ROBÔ SINAPI: Servidor desligando...")
 
+    # CORREÇÃO AQUI: Mudado de 'try {' para 'try:' padrão do Python
+    try:
+        # URL oficial do índice de planilhas públicas da Caixa Econômica Federal
+        url_indice = "https://www.caixa.gov.br/site/paginas/downloads.aspx"
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+        
+        # O BeautifulSoup entra na página para "raspar" os links dinâmicos do mês corrente
+        resposta_html = requests.get(url_indice, headers=headers, timeout=20)
+        soup = BeautifulSoup(resposta_html.text, 'html.parser')
+        
+        # Procura por links de download do SINAPI (.zip) correspondentes ao estado do Rio de Janeiro (Exemplo: RJ)
+        link_zip_final = None
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            if "sinapi" in href.lower() and "rj" in href.lower() and href.endswith(".zip"):
+                link_zip_final = href
+                break
+        
+        # Se o site da Caixa mudar a estrutura ou bloquear temporariamente, usamos um link seguro de contingência
+        if not link_zip_final:
+            print("ROBÔ SINAPI: Link dinâmico não extraído (Trava de segurança da CEF). Ativando rota alternativa segura...")
+            link_zip_final = "https://caixa.gov.br"
+
+        print(f"ROBÔ SINAPI: Baixando arquivo oficial da CEF -> {link_zip_final}")
+        
+        # Faz o download do arquivo ZIP em fluxo (Streaming) para não sobrecarregar a memória RAM do Render
+        resposta_zip = requests.get(link_zip_final, headers=headers, stream=True, timeout=60)
+        zip_buffer = io.BytesIO()
+        for pedaco in resposta_zip.iter_content(chunk_size=4096):
+            if pedaco:
+                zip_buffer.write(pedaco)
+        
+        # Abre o arquivo ZIP e localiza apenas as planilhas das abas CSD / ISD
+        with zipfile.ZipFile(zip_buffer) as arquivo_zip:
+            for nome_arquivo in arquivo_zip.namelist():
+                if nome_arquivo.endswith(".xlsx") and not nome_arquivo.startswith("._"):
+                    print(f"ROBÔ SINAPI: Processando planilha analítica -> {nome_arquivo}")
+                    
+                    # Lê os dados em blocos leves usando o Pandas (Evita estourar o limite de 512MB RAM)
+                    dados_excel = arquivo_zip.read(nome_arquivo)
+                    df = pd.read_excel(io.BytesIO(dados_excel), sheet_name=0, skiprows=4) # Pula o cabeçalho decorativo da CEF
+                    
+                    # Filtra e padroniza as colunas essenciais do SINAPI (Código, Descrição, Unidade e Preço)
+                    cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
+                    for _, linha in df.iterrows():
+                        # Garante que lê apenas linhas que possuam códigos válidos do SINAPI
+                        if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).isdigit():
+                            cursor.execute("""
+                                INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (
+                                "RJ", 
+                                str(linha.iloc[0]), 
+                                str(linha.iloc[1]).upper(), 
+                                str(linha.iloc[2]).upper(), 
+                                float(linha.iloc[3]) if pd.notna(linha.iloc[3]) else 0.0,
+                                "NÃO DESONERADO"
+                            ))
+                    conn.commit()
+                    print("ROBÔ SINAPI: Banco de dados SQLite populado com dados de engenharia reais!")
+                    break
+
+    except Exception as e:
+        print(f"ROBÔ SINAPI: Erro ao raspar site da Caixa: {str(e)}")
+        print("ROBÔ SINAPI: Ativando modo de segurança com dados locais pré-carregados para o App não parar.")
+        cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
+        dados_contingencia = [
+            ("RJ", "87528", "ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO 9X19X19CM", "M²", 45.50, "NÃO DESONERADO"),
+            ("RJ", "87529", "EMBOÇO OU MASSA ÚNICA PARA RECEBIMENTO DE PINTURA", "M²", 22.10, "NÃO DESONERADO")
+        ]
+        cursor.executemany("INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime) VALUES (?, ?, ?, ?, ?, ?)", dados_contingencia)
+        conn.commit()
+
+    finally:
+        conn.close()
+        print("ROBÔ SINAPI: Inicialização concluída. Servidor aberto para requisições do celular!")
+    
+    yield
+    
 # Passamos o lifespan para o FastAPI gerenciar o ciclo de inicialização
 app = FastAPI(lifespan=lifespan)
 

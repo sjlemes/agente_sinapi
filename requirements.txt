@@ -6,3 +6,4 @@ reportlab
 requests
 beautifulsoup4
 openpyxl
+pandas
