@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
         if not link_zip_final:
             print("ROBÔ SINAPI: Link dinâmico bloqueado pela CEF. Ativando link permanente direto...")
             # Link oficial direto para o ZIP de relatórios mensais do SINAPI
-            link_zip_final = "https://caixa.gov.br"
+            link_zip_final = "downloads.caixa.gov.br"
     
         print(f"ROBÔ SINAPI: Baixando arquivo oficial da CEF -> {link_zip_final}")
         
