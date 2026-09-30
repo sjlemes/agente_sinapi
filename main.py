@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     conn.commit()
 
     # Nome exato do arquivo consolidado que você mencionou
-    nome_arquivo_local = "SINAPI_Referência_2026_08.xlsx"
+    nome_arquivo_local = "sinapi_2026_08.xlsx"
 
     try:
         if os.path.exists(nome_arquivo_local):
