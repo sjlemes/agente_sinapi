@@ -17,12 +17,11 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- RASPAGEM REAL E CONEXÃO COM A CEF (LIFESPAN) ---
+# --- CARREGAMENTO DO ARQUIVO CONSOLIDADO NACIONAL (LIFESPAN COBERTURA NACIONAL) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ROBÔ SINAPI: Iniciando varredura automatizada no site da Caixa...")
+    print("ROBÔ SINAPI: Inicializando leitura da planilha nacional unificada...")
     
-    # 1. Cria ou limpa a estrutura do Banco SQLite local do Render
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -38,75 +37,63 @@ async def lifespan(app: FastAPI):
     """)
     conn.commit()
 
-    try:
-        # Montagem segura da URL fatiada
-        parte1 = "https://www.caixa.gov.br"
-        parte2 = "/Downloads/sinapi-a-partir-jul-2009-rj"
-        parte3 = "/SINAPI_ref_Insumos_Composicoes_RJ_072026_NaoDesonerado.xlsx"
-        link_excel_final = parte1 + parte2 + parte3
-        
-        # Cabeçalho completo simulando um navegador real para furar o bloqueio antibot da Caixa
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "pt-BR,pt;q=0.8,en-US;q=0.5,en;q=0.3",
-            "Referer": "https://www.caixa.gov.br/"
-        }
+    # Nome exato do arquivo consolidado que você mencionou
+    nome_arquivo_local = "SINAPI_Referência_2026_08.xlsx"
 
-        print(f"ROBÔ SINAPI: Baixando planilha oficial direto da CEF -> {link_excel_final}")
-        
-        # Cria uma sessão ativa para herdar os cookies de segurança necessários da Caixa
-        sessao = requests.Session()
-        sessao.headers.update(headers)
-        
-        # Faz uma requisição inicial à página principal para coletar os cookies obrigatórios do servidor
-        sessao.get("https://caixa.gov.br", timeout=20)
-        
-        # Agora sim, faz o download do arquivo real utilizando a sessão validada
-        resposta_excel = sessao.get(link_excel_final, timeout=60)
-        
-        print(f"ROBÔ SINAPI: Tamanho do arquivo recebido: {len(resposta_excel.content)} bytes.")
-        print("ROBÔ SINAPI: Iniciando leitura direta do Excel com motor openpyxl...")
-        
-        # O Pandas lê os bytes reais usando o openpyxl
-        df = pd.read_excel(io.BytesIO(resposta_excel.content), sheet_name=0, skiprows=4, engine="openpyxl")
-        
-        # Limpa o banco para injetar os dados reais extraídos do Excel
-        cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
-        
-        # Percorre as linhas e armazena na tabela SQLite local
-        # Usamos .iloc para pegar a coluna 0 (Código), 1 (Descrição), 2 (Unidade) e 7 (Preço) conforme o padrão SINAPI
-        for _, linha in df.iterrows():
-            if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).isdigit():
-                cursor.execute("""
-                    INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    "RJ", 
-                    str(linha.iloc[0]), 
-                    str(linha.iloc[1]).upper(), 
-                    str(linha.iloc[2]).upper(), 
-                    float(linha.iloc[7]) if pd.notna(linha.iloc[7]) else 0.0,
-                    "NÃO DESONERADO"
-                ))
-        
-        conn.commit()
-        print("ROBÔ SINAPI: Banco de dados SQLite populado com dados de engenharia REAIS do Excel!")
+    try:
+        if os.path.exists(nome_arquivo_local):
+            print(f"ROBÔ SINAPI: Localizado arquivo unificado {nome_arquivo_local}. Iniciando indexação...")
+            
+            # Carrega o arquivo Excel para inspecionar todas as abas (Estados/Regimes)
+            excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl")
+            cursor.execute("DELETE FROM composicoes") # Limpa o banco anterior
+            
+            # Varre cada aba da planilha nacional automaticamente
+            for nome_aba in excel_file.sheet_names:
+                # Exemplo de padrão da CEF: abas nomeadas como 'RJ_C_DES' (Desonerado) ou 'RJ_C_NDES' (Não Desonerado)
+                # Vamos identificar o Estado (2 primeiras letras) e o Regime pelo nome da aba
+                nome_aba_upper = nome_aba.upper().strip()
+                if len(nome_aba_upper) >= 2:
+                    estado_aba = nome_aba_upper[:2] # Pega 'RJ', 'SP', 'PR', etc.
+                    regime_aba = "DESONERADO" if "DES" in nome_aba_upper and "NDES" not in nome_aba_upper else "NÃO DESONERADO"
+                    
+                    print(f"ROBÔ SINAPI: Indexando dados de {estado_aba} ({regime_aba}) da aba [{nome_aba}]...")
+                    
+                    # Lê os dados especificamente desta aba pulando o cabeçalho decorativo
+                    df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
+                    
+                    for _, linha in df.iterrows():
+                        # Valida se a primeira coluna contém o código numérico válido do SINAPI
+                        if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).strip().isdigit():
+                            cursor.execute("""
+                                INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (
+                                estado_aba,
+                                str(linha.iloc[0]).strip(),
+                                str(linha.iloc[1]).upper().strip(),
+                                str(linha.iloc[2]).upper().strip(),
+                                float(linha.iloc[7]) if pd.notna(linha.iloc[7]) else 0.0,
+                                regime_aba
+                            ))
+            conn.commit()
+            print("ROBÔ SINAPI: Sucesso Absoluto! Base Nacional SQLite populada com dados reais de todo o Brasil!")
+        else:
+            print(f"ROBÔ SINAPI: Arquivo {nome_arquivo_local} não localizado na raiz.")
+            raise FileNotFoundError()
 
     except Exception as e:
-        print(f"ROBÔ SINAPI: Erro ao processar Excel da Caixa: {str(e)}")
-        print("ROBÔ SINAPI: Ativando modo de segurança com dados locais para o App não parar.")
-        cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
-        dados_contingencia = [
-            ("RJ", "87528", "ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO 9X19X19CM", "M²", 45.50, "NÃO DESONERADO"),
-            ("RJ", "87529", "EMBOÇO OU MASSA ÚNICA PARA RECEBIMENTO DE PINTURA", "M²", 22.10, "NÃO DESONERADO")
-        ]
-        cursor.executemany("INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime) VALUES (?, ?, ?, ?, ?, ?)", dados_contingencia)
+        print(f"ROBÔ SINAPI: Erro ao processar Planilha Nacional: {str(e)}")
+        # Contingência básica caso o arquivo falhe ao abrir
+        cursor.execute("DELETE FROM composicoes")
+        cursor.execute("""
+            INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
+            VALUES ('RJ', '87528', 'ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO', 'M²', 45.50, 'NÃO DESONERADO')
+        """)
         conn.commit()
-
     finally:
         conn.close()
-        print("ROBÔ SINAPI: Inicialização concluída. Servidor aberto para requisições do celular!")
+        print("ROBÔ SINAPI: Inicialização e carregamento concluídos!")
     
     yield
     
@@ -123,29 +110,28 @@ class OrcamentoRequest(BaseModel):
     quantidade: float
     desonerado: bool
 
-# --- ROTA 1: IA CONSULTANDO O BANCO SQLITE LOCAL REAL ---
+# --- ATUALIZAÇÃO DA ROTA DE CONSULTA DA IA ---
 @app.post("/calcular-orcamento")
 async def calcular_orcamento(request: OrcamentoRequest):
     regime_busca = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    estado_busca = request.estado.upper().strip()
     
-    # Conecta no banco sqlite local que o robô acabou de criar no start
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Faz uma busca SQL real baseada no estado e regime enviados pelo celular
+    # Busca cirúrgica filtrando dinamicamente por Estado e Regime selecionados no Celular!
     cursor.execute(
         "SELECT codigo, descricao, unidade, preco_unitario FROM composicoes WHERE estado = ? AND regime = ?", 
-        (request.estado, regime_busca)
+        (estado_busca, regime_busca)
     )
     linhas_banco = cursor.fetchall()
     conn.close()
     
-    # Transforma as linhas reais do banco em formato de texto para a IA ler de forma ultra leve
     contexto_banco_real = str(linhas_banco)
     
     prompt = f"""
     Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
-    O usuário quer um orçamento para o estado: {request.estado} no regime: {regime_busca}.
+    O usuário quer um orçamento para o estado: {estado_busca} no regime: {regime_busca}.
     Ele buscou por: "{request.palavras_chave}" e quer construir a quantidade de: {request.quantidade}.
     
     Com base APENAS nos dados extraídos diretamente do nosso banco SQLITE local do SINAPI abaixo:
@@ -159,13 +145,10 @@ async def calcular_orcamento(request: OrcamentoRequest):
     Retorne um relatório curto e profissional formatado de forma limpa em tópicos.
     """
     
-    resposta = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt,
-    )
-    
+    resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
     return {"relatorio": resposta.text}
 
+# --- ROTA DE GERAR PDF ---
 @app.post("/gerar-pdf-orcamento")
 async def gerar_pdf_orcamento(request: OrcamentoRequest):
     buffer = io.BytesIO()
