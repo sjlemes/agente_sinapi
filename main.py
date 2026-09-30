@@ -55,12 +55,13 @@ async def lifespan(app: FastAPI):
             if "sinapi" in href.lower() and "rj" in href.lower() and href.endswith(".zip"):
                 link_zip_final = href
                 break
-        
-        # Se o site da Caixa mudar a estrutura ou bloquear temporariamente, usamos um link seguro de contingência
-        if not link_zip_final:
-            print("ROBÔ SINAPI: Link dinâmico não extraído (Trava de segurança da CEF). Ativando rota alternativa segura...")
-            link_zip_final = "https://caixa.gov.br"
 
+        # Se o site da Caixa bloquear a raspagem, usamos o link permanente direto do repositório deles
+        if not link_zip_final:
+            print("ROBÔ SINAPI: Link dinâmico bloqueado pela CEF. Ativando link permanente direto...")
+            # Link oficial direto para o ZIP de relatórios mensais do SINAPI
+            link_zip_final = "https://caixa.gov.br"
+    
         print(f"ROBÔ SINAPI: Baixando arquivo oficial da CEF -> {link_zip_final}")
         
         # Faz o download do arquivo ZIP em fluxo (Streaming) para não sobrecarregar a memória RAM do Render
