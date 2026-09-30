@@ -125,39 +125,52 @@ class OrcamentoRequest(BaseModel):
 # --- ATUALIZAÇÃO DA ROTA DE CONSULTA DA IA ---
 @app.post("/calcular-orcamento")
 async def calcular_orcamento(request: OrcamentoRequest):
-    regime_busca = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
-    estado_busca = request.estado.upper().strip()
+    # Define se o usuário quer buscar nas abas de Composição (CSD/CCD) ou Insumos (ISD/ICD)
+    # Vamos fazer uma busca ampla por palavra-chave dentro do banco real indexado pelo robô
+    termo_busca = f"%{request.palavras_chave.upper().strip()}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Busca cirúrgica filtrando dinamicamente por Estado e Regime selecionados no Celular!
-    cursor.execute(
-        "SELECT codigo, descricao, unidade, preco_unitario FROM composicoes WHERE estado = ? AND regime = ?", 
-        (estado_busca, regime_busca)
-    )
+    # Busca por descrição ou código aproximado na base real populada
+    cursor.execute("""
+        SELECT codigo, descricao, unidade, preco_unitario, regime 
+        FROM composicoes 
+        WHERE descricao LIKE ? OR codigo = ?
+        LIMIT 20
+    """, (termo_busca, request.palavras_chave.strip()))
+    
     linhas_banco = cursor.fetchall()
     conn.close()
     
-    contexto_banco_real = str(linhas_banco)
+    if not linhas_banco:
+        contexto_banco_real = "Nenhum item correspondente exato encontrado no banco SINAPI para esta palavra-chave."
+    else:
+        contexto_banco_real = str(linhas_banco)
     
+    # Entrega os dados REAIS da planilha da Caixa para o Gemini processar o relatório do celular
     prompt = f"""
-    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
-    O usuário quer um orçamento para o estado: {estado_busca} no regime: {regime_busca}.
-    Ele buscou por: "{request.palavras_chave}" e quer construir a quantidade de: {request.quantidade}.
+    Você é um Engenheiro de Custos especialista na tabela oficial do SINAPI da Caixa Econômica Federal.
+    O usuário solicitou um orçamento para o item: "{request.palavras_chave}" na quantidade de: {request.quantidade}.
+    O regime de desoneração selecionado foi: {"DESONERADO" if request.desonerado else "NÃO DESONERADO"}.
     
-    Com base APENAS nos dados extraídos diretamente do nosso banco SQLITE local do SINAPI abaixo:
+    Com base EXCLUSIVAMENTE nos dados reais extraídos da planilha oficial da CEF contidos no nosso banco de dados abaixo:
     {contexto_banco_real}
     
     Faça o seguinte:
-    1. Identifique qual código da lista melhor se aplica à busca dele.
-    2. Faça a memória de cálculo do Valor Total (Preço Unitário do banco x {request.quantidade}).
-    3. Detalhe os insumos internos dessa composição baseando-se nas regras de engenharia.
+    1. Escolha o item da lista que melhor se adequa ao pedido.
+    2. Apresente o Código SINAPI real, Descrição, Unidade e Preço Unitário encontrados.
+    3. Multiplique o preço unitário real pela quantidade ({request.quantidade}) e apresente o valor total com memória de cálculo.
+    4. Detalhe os insumos analíticos estimados para essa quantidade com base nas boas práticas de engenharia.
     
-    Retorne um relatório curto e profissional formatado de forma limpa em tópicos.
+    Retorne um relatório muito profissional, limpo e estruturado em tópicos para a tela do celular.
     """
     
-    resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
+    resposta = client.models.generate_content(
+        model='gemini-3.8-flash',
+        contents=prompt,
+    )
+    
     return {"relatorio": resposta.text}
 
 # --- ROTA DE GERAR PDF ---
