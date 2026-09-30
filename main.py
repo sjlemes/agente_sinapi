@@ -50,34 +50,46 @@ async def lifespan(app: FastAPI):
             
             # Varre cada aba da planilha nacional automaticamente
             for nome_aba in excel_file.sheet_names:
-                # Exemplo de padrão da CEF: abas nomeadas como 'RJ_C_DES' (Desonerado) ou 'RJ_C_NDES' (Não Desonerado)
-                # Vamos identificar o Estado (2 primeiras letras) e o Regime pelo nome da aba
                 nome_aba_upper = nome_aba.upper().strip()
+                
+                # CORREÇÃO 1: Ignora abas decorativas que não são estados
+                if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
+                    print(f"ROBÔ SINAPI: Ignorando aba decorativa [{nome_aba}].")
+                    continue
+                
                 if len(nome_aba_upper) >= 2:
-                    estado_aba = nome_aba_upper[:2] # Pega 'RJ', 'SP', 'PR', etc.
+                    estado_aba = nome_aba_upper[:2]
                     regime_aba = "DESONERADO" if "DES" in nome_aba_upper and "NDES" not in nome_aba_upper else "NÃO DESONERADO"
                     
                     print(f"ROBÔ SINAPI: Indexando dados de {estado_aba} ({regime_aba}) da aba [{nome_aba}]...")
                     
-                    # Lê os dados especificamente desta aba pulando o cabeçalho decorativo
                     df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
                     
                     for _, linha in df.iterrows():
-                        # Valida se a primeira coluna contém o código numérico válido do SINAPI
-                        if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).strip().isdigit():
+                        # CORREÇÃO 2: Garante de forma segura que a linha possui colunas (tamanho) antes de ler o .iloc
+                        if len(linha) > 0 and pd.notna(linha.iloc) and str(linha.iloc).strip().isdigit():
+                            
+                            # Define os preços de forma segura, garantindo que a coluna existe
+                            preco = 0.0
+                            if len(linha) > 3 and pd.notna(linha.iloc):
+                                try:
+                                    preco = float(linha.iloc)
+                                except:
+                                    preco = 0.0
+                                    
                             cursor.execute("""
                                 INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
                                 VALUES (?, ?, ?, ?, ?, ?)
                             """, (
                                 estado_aba,
-                                str(linha.iloc[0]).strip(),
-                                str(linha.iloc[1]).upper().strip(),
-                                str(linha.iloc[2]).upper().strip(),
-                                float(linha.iloc[7]) if pd.notna(linha.iloc[7]) else 0.0,
+                                str(linha.iloc).strip(),
+                                str(linha.iloc).upper().strip(),
+                                str(linha.iloc).upper().strip() if len(linha) > 2 and pd.notna(linha.iloc) else "-",
+                                preco,
                                 regime_aba
                             ))
             conn.commit()
-            print("ROBÔ SINAPI: Sucesso Absoluto! Base Nacional SQLite populada com dados reais de todo o Brasil!")
+            print("ROBÔ SINAPI: Sucesso Absoluto! Base Nacional SQLite populado com dados de engenharia reais!")
         else:
             print(f"ROBÔ SINAPI: Arquivo {nome_arquivo_local} não localizado na raiz.")
             raise FileNotFoundError()
