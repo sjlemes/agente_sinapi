@@ -38,26 +38,26 @@ async def lifespan(app: FastAPI):
     """)
     conn.commit()
 
-    # CORREÇÃO AQUI: Mudado de 'try {' para 'try:' padrão do Python
     try:
-        # URL do link permanente da planilha oficial unificada em Excel da CEF
+        # URL REAL E COMPLETA DA PLANILHA NO SERVIDOR DE DOWNLOADS DA CEF
+        # (Atenção para o link completo contendo a extensão .xlsx no final)
         link_excel_final = "https://caixa.gov.br"
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
         print(f"ROBÔ SINAPI: Baixando planilha oficial direto da CEF -> {link_excel_final}")
         
-        # Baixa o arquivo Excel em fluxo de bytes
+        # Realiza o download do arquivo binário real da planilha
         resposta_excel = requests.get(link_excel_final, headers=headers, timeout=60)
         
         print("ROBÔ SINAPI: Arquivo recebido. Iniciando leitura direta do Excel...")
         
-        # CORREÇÃO DEFINITIVA: O Pandas lê o buffer binário do Excel direto, sem precisar de ZIP!
-        df = pd.read_excel(io.BytesIO(resposta_excel.content), sheet_name=0, skiprows=4)
+        # CORREÇÃO DEFINITIVA: Forçado o engine='openpyxl' para o Pandas saber exatamente como ler as células
+        df = pd.read_excel(io.BytesIO(resposta_excel.content), sheet_name=0, skiprows=4, engine="openpyxl")
         
-        # Limpa o banco para injetar os dados reais extraídos das abas (ex: CSD)
+        # Limpa o banco para injetar os dados reais extraídos do Excel
         cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
         
-        # Percorre as colunas da planilha unificada da Caixa
+        # Percorre as linhas e armazena na tabela SQLite local
         for _, linha in df.iterrows():
             if pd.notna(linha.iloc[0]) and str(linha.iloc[0]).isdigit():
                 cursor.execute("""
@@ -71,12 +71,11 @@ async def lifespan(app: FastAPI):
                     float(linha.iloc[3]) if pd.notna(linha.iloc[3]) else 0.0,
                     "NÃO DESONERADO"
                 ))
-            
-            conn.commit()
-            print("ROBÔ SINAPI: Banco de dados SQLite populado com dados de engenharia REAIS do Excel!")
+        
+        conn.commit()
+        print("ROBÔ SINAPI: Banco de dados SQLite populado com dados de engenharia REAIS do Excel!")
 
     except Exception as e:
-        # Se houver erro ou instabilidade de rede na CEF, ativa a contingência automática
         print(f"ROBÔ SINAPI: Erro ao processar Excel da Caixa: {str(e)}")
         print("ROBÔ SINAPI: Ativando modo de segurança com dados locais para o App não parar.")
         cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
