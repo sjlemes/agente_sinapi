@@ -39,21 +39,27 @@ async def lifespan(app: FastAPI):
     conn.commit()
 
     try:
-        # URL REAL E COMPLETA DA PLANILHA NO SERVIDOR DE DOWNLOADS DA CEF
-        # (Atenção para o link completo contendo a extensão .xlsx no final)
-        link_excel_final = "https://caixa.gov.br"
+        # Montando a URL em partes para garantir que ela não sofra cortes ou reduções
+        parte1 = "https://www.caixa.gov.br"
+        parte2 = "/Downloads/sinapi-a-partir-jul-2009-rj"
+        parte3 = "/SINAPI_ref_Insumos_Composicoes_RJ_072026_NaoDesonerado.xlsx"
+        
+        # Junta os pedaços na variável final de download
+        link_excel_final = parte1 + parte2 + parte3
+        
         headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
+        # Agora o print vai exibir a URL completa remontada na inicialização do Render
         print(f"ROBÔ SINAPI: Baixando planilha oficial direto da CEF -> {link_excel_final}")
         
-        # Realiza o download do arquivo binário real da planilha
+        # Realiza o download do arquivo binário real da planilha (.xlsx)
         resposta_excel = requests.get(link_excel_final, headers=headers, timeout=60)
         
         print("ROBÔ SINAPI: Arquivo recebido. Iniciando leitura direta do Excel...")
         
-        # CORREÇÃO DEFINITIVA: Forçado o engine='openpyxl' para o Pandas saber exatamente como ler as células
+        # O Pandas lê os bytes reais usando o openpyxl
         df = pd.read_excel(io.BytesIO(resposta_excel.content), sheet_name=0, skiprows=4, engine="openpyxl")
-        
+
         # Limpa o banco para injetar os dados reais extraídos do Excel
         cursor.execute("DELETE FROM composicoes WHERE estado = 'RJ'")
         
