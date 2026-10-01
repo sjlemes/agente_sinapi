@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, responses
 from pydantic import BaseModel
 from google import genai
+from google.genai import types
 
 # Ferramentas para gerar o PDF
 from reportlab.lib.pagesizes import letter
@@ -122,6 +123,7 @@ async def calcular_orcamento(request: OrcamentoRequest):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
+    # Filtra por Estado, Regime e Palavra-Chave na tabela nacional unificada
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
@@ -131,30 +133,53 @@ async def calcular_orcamento(request: OrcamentoRequest):
     linhas_banco = cursor.fetchall()
     conn.close()
     
-    contexto_banco_real = str(linhas_banco) if linhas_banco else "Nenhum item correspondente exato localizado no banco."
+    contexto_banco_real = str(linhas_banco) if linhas_banco else "Nenhum item correspondente localizado."
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
     prompt = f"""
     Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
     O usuário quer um orçamento para: "{request.palavras_chave}" (Qtd: {request.quantidade}) no estado: {request.estado.upper()} ({regime_texto}).
     
-    Dados reais extraídos do banco de dados:
+    Dados reais extraídos do nosso banco SQLite:
     {contexto_banco_real}
     
-    Responda RIGOROSAMENTE no formato JSON abaixo, contendo o relatório em Markdown e uma lista com até 4 insumos principais. Não escreva nada fora do JSON.
-    
-    {{
-        "relatorio": "Texto estruturado do relatório aqui...",
-        "insumos": [
-            {{"nome": "Material Principal", "qtd": {request.quantidade}, "unidade": "UNID", "total": "R$ 100,00"}},
-            {{"nome": "Mão de Obra Estimada", "qtd": 1.0, "unidade": "H", "total": "R$ 25,00"}}
-        ]
-    }}
+    Com base nesses dados, preencha os campos obrigatórios do relatório descritivo e da lista analítica de insumos associados.
     """
+
+    # 🚨 A MÁGICA DA BLINDAGEM: Força o Gemini a obedecer a estrutura exata do JSON
+    config_ia = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "properties": {
+                "relatorio": {"type": "STRING"},
+                "insumos": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "nome": {"type": "STRING"},
+                            "qtd": {"type": "NUMBER"},
+                            "unidade": {"type": "STRING"},
+                            "total": {"type": "STRING"}
+                        },
+                        "required": ["nome", "qtd", "unidade", "total"]
+                    }
+                }
+            },
+            "required": ["relatorio", "insumos"]
+        }
+    )
     
-    resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
-    texto_limpo = resposta.text.strip().removeprefix("```json").removesuffix("```").strip()
-    return responses.PlainTextResponse(texto_limpo, media_type="application/json")
+    # Executa a chamada passando a configuração de segurança rígida
+    resposta = client.models.generate_content(
+        model='gemini-3.8-flash',
+        contents=prompt,
+        config=config_ia
+    )
+    
+    # Como o Google garante o envio do JSON puro, devolvemos direto para o celular sem risco de erro ASGI!
+    return responses.PlainTextResponse(resposta.text, media_type="application/json")
 
 # --- ROTA 2: GERAÇÃO DO ARQUIVO PDF CORPORATIVO ---
 @app.post("/gerar-pdf-orcamento")
