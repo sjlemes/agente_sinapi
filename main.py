@@ -122,46 +122,49 @@ class OrcamentoRequest(BaseModel):
     quantidade: float
     desonerado: bool
 
-# --- ATUALIZAÇÃO DA ROTA DE CONSULTA DA IA ---
+# --- ROTA 1: CONSULTA INTELIGENTE E SEGURA DA IA ---
 @app.post("/calcular-orcamento")
 async def calcular_orcamento(request: OrcamentoRequest):
-    # Define se o usuário quer buscar nas abas de Composição (CSD/CCD) ou Insumos (ISD/ICD)
-    # Vamos fazer uma busca ampla por palavra-chave dentro do banco real indexado pelo robô
+    # Transforma a palavra-chave em um padrão de busca aproximada (Ex: %ALVENARIA%)
     termo_busca = f"%{request.palavras_chave.upper().strip()}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Busca por descrição ou código aproximado na base real populada
+    # 🚨 CORREÇÃO: Busca por descrição aproximada ou código exato limitado a 50 itens
+    # Isso evita que o Python tente entregar 10.000 linhas de uma vez para o Gemini
     cursor.execute("""
-        SELECT codigo, descricao, unidade, preco_unitario, regime 
+        SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
         WHERE descricao LIKE ? OR codigo = ?
-        LIMIT 20
+        LIMIT 50
     """, (termo_busca, request.palavras_chave.strip()))
     
     linhas_banco = cursor.fetchall()
     conn.close()
     
+    # Se o banco não encontrar nada, avisa a IA para ela estimar com base nas boas práticas
     if not linhas_banco:
-        contexto_banco_real = "Nenhum item correspondente exato encontrado no banco SINAPI para esta palavra-chave."
+        contexto_banco_real = "Nenhum item correspondente exato foi localizado nas tabelas indexadas para esta palavra-chave."
     else:
         contexto_banco_real = str(linhas_banco)
     
-    # Entrega os dados REAIS da planilha da Caixa para o Gemini processar o relatório do celular
+    # Regime de desoneração selecionado no celular
+    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    
     prompt = f"""
     Você é um Engenheiro de Custos especialista na tabela oficial do SINAPI da Caixa Econômica Federal.
     O usuário solicitou um orçamento para o item: "{request.palavras_chave}" na quantidade de: {request.quantidade}.
-    O regime de desoneração selecionado foi: {"DESONERADO" if request.desonerado else "NÃO DESONERADO"}.
+    O estado informado foi: {request.estado.upper().strip()} sob o regime: {regime_texto}.
     
-    Com base EXCLUSIVAMENTE nos dados reais extraídos da planilha oficial da CEF contidos no nosso banco de dados abaixo:
+    Com base estritamente nos dados extraídos diretamente da nossa planilha oficial indexada abaixo:
     {contexto_banco_real}
     
     Faça o seguinte:
-    1. Escolha o item da lista que melhor se adequa ao pedido.
-    2. Apresente o Código SINAPI real, Descrição, Unidade e Preço Unitário encontrados.
-    3. Multiplique o preço unitário real pela quantidade ({request.quantidade}) e apresente o valor total com memória de cálculo.
-    4. Detalhe os insumos analíticos estimados para essa quantidade com base nas boas práticas de engenharia.
+    1. Escolha o item da lista acima que melhor se adequa ao pedido.
+    2. Apresente o Código SINAPI real, Descrição completa, Unidade e Preço Unitário encontrados.
+    3. Multiplique o preço unitário real pela quantidade ({request.quantidade}) e calcule o valor total.
+    4. Detalhe os insumos analíticos estimados (materiais e mão de obra) necessários para executar essa quantidade.
     
     Retorne um relatório muito profissional, limpo e estruturado em tópicos para a tela do celular.
     """
