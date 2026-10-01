@@ -170,7 +170,8 @@ def calcular_orcamento(request: OrcamentoRequest):
     # 🚨 O ESCUDO PROTOCOLO: Se o Google falhar por alta demanda, o Python captura e impede o Erro 500 do ASGI
     try:
         resposta = client.models.generate_content(
-            model='gemini-3.8-flash',
+            #model='gemini-3.8-flash',
+            model='gemini-3.7-flash',
             contents=prompt,
             config=config_ia
         )
