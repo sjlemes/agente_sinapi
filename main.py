@@ -2,6 +2,7 @@ import os
 import io
 import sqlite3
 import pandas as pd
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, responses
 from pydantic import BaseModel
