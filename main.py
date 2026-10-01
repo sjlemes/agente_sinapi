@@ -4,6 +4,7 @@ import io
 import sqlite3
 import zipfile
 import requests
+import json
 from bs4 import BeautifulSoup
 import pandas as pd
 from contextlib import asynccontextmanager
@@ -16,6 +17,14 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+
+# --- MODELO DE DADOS PARA RECEBER O PDF CALCULADO ---
+class PDFRequest(BaseModel):
+    estado: str
+    palavras_chave: str
+    quantidade: float
+    desonerado: bool
+    relatorio_texto: str
 
 # --- CARREGAMENTO DO ARQUIVO CONSOLIDADO NACIONAL (LIFESPAN COBERTURA NACIONAL) ---
 @asynccontextmanager
@@ -122,63 +131,52 @@ class OrcamentoRequest(BaseModel):
     quantidade: float
     desonerado: bool
 
-# --- ROTA 1: CONSULTA INTELIGENTE E SEGURA DA IA ---
+# --- ROTA 1 ATUALIZADA: RETORNA TEXTO + TABELA ESTRUTURADA ---
 @app.post("/calcular-orcamento")
 async def calcular_orcamento(request: OrcamentoRequest):
-    # Transforma a palavra-chave em um padrão de busca aproximada (Ex: %ALVENARIA%)
     termo_busca = f"%{request.palavras_chave.upper().strip()}%"
-    
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
-    
-    # 🚨 CORREÇÃO: Busca por descrição aproximada ou código exato limitado a 50 itens
-    # Isso evita que o Python tente entregar 10.000 linhas de uma vez para o Gemini
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
         WHERE descricao LIKE ? OR codigo = ?
-        LIMIT 50
+        LIMIT 20
     """, (termo_busca, request.palavras_chave.strip()))
-    
     linhas_banco = cursor.fetchall()
     conn.close()
     
-    # Se o banco não encontrar nada, avisa a IA para ela estimar com base nas boas práticas
-    if not linhas_banco:
-        contexto_banco_real = "Nenhum item correspondente exato foi localizado nas tabelas indexadas para esta palavra-chave."
-    else:
-        contexto_banco_real = str(linhas_banco)
-    
-    # Regime de desoneração selecionado no celular
+    contexto_banco_real = str(linhas_banco) if linhas_banco else "Nenhum item correspondente exato foi localizado."
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
     prompt = f"""
-    Você é um Engenheiro de Custos especialista na tabela oficial do SINAPI da Caixa Econômica Federal.
-    O usuário solicitou um orçamento para o item: "{request.palavras_chave}" na quantidade de: {request.quantidade}.
-    O estado informado foi: {request.estado.upper().strip()} sob o regime: {regime_texto}.
+    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
+    O usuário quer um orçamento para: "{request.palavras_chave}" (Qtd: {request.quantidade}) no estado: {request.estado.upper()} ({regime_texto}).
     
-    Com base estritamente nos dados extraídos diretamente da nossa planilha oficial indexada abaixo:
+    Dados extraídos do banco SQLite:
     {contexto_banco_real}
     
-    Faça o seguinte:
-    1. Escolha o item da lista acima que melhor se adequa ao pedido.
-    2. Apresente o Código SINAPI real, Descrição completa, Unidade e Preço Unitário encontrados.
-    3. Multiplique o preço unitário real pela quantidade ({request.quantidade}) e calcule o valor total.
-    4. Detalhe os insumos analíticos estimados (materiais e mão de obra) necessários para executar essa quantidade.
+    Responda RIGOROSAMENTE no formato JSON abaixo, contendo o relatório em Markdown e uma lista com até 4 insumos/materiais principais gerados analiticamente. Não adicione nenhuma palavra fora do JSON.
     
-    Retorne um relatório muito profissional, limpo e estruturado em tópicos para a tela do celular.
+    Modelo de Resposta Esperada:
+    {{
+        "relatorio": "Texto do relatório aqui...",
+        "insumos": [
+            {{"nome": "Nome do Material 1", "qtd": 1.5, "unidade": "KG", "total": "R$ 15,00"}},
+            {{"nome": "Nome do Profissional 2", "qtd": 2.0, "unidade": "H", "total": "R$ 50,00"}}
+        ]
+    }}
     """
     
-    resposta = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt,
-    )
+    resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
     
-    return {"relatorio": resposta.text}
+    # Limpa possíveis formatações de bloco de código que a IA coloca (```json ... ```)
+    texto_limpo = resposta.text.strip().removeprefix("```json").removesuffix("```").strip()
+    return responses.PlainTextResponse(texto_limpo, media_type="application/json")
 
-# --- ROTA DE GERAR PDF ---
+# --- ROTA 2 CORRIGIDA: MOTOR DE GERAÇÃO DO PDF SEM ERROS ---
 @app.post("/gerar-pdf-orcamento")
-async def gerar_pdf_orcamento(request: OrcamentoRequest):
+async def gerar_pdf_orcamento(request: PDFRequest):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
     styles = getSampleStyleSheet()
@@ -189,22 +187,17 @@ async def gerar_pdf_orcamento(request: OrcamentoRequest):
     elementos.append(Spacer(1, 10))
     
     regime = "Desonerado" if request.desonerado else "Não Desonerado"
-    dados_tabela = [
-        ['Parâmetro', 'Valor Selecionado'],
-        ['Estado', request.estado],
-        ['Busca', request.palavras_chave],
-        ['Quantidade', f"{request.quantidade}"],
-        ['Regime Mão de Obra', regime]
-    ]
     
-    tabela_visual = Table(dados_tabela, colWidths=[150, 300])
-    tabela_visual.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2B6CB0')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#CBD5E0')),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#EDF2F7')])
-    ]))
-    elementos.append(tabela_visual)
+    # Criando os parágrafos de texto do relatório com quebra de linha correta para o PDF
+    estilo_corpo = styles['Normal']
+    elementos.append(Paragraph(f"<b>Estado:</b> {request.estado} | <b>Regime:</b> {regime}", estilo_corpo))
+    elementos.append(Paragraph(f"<b>Serviço Solicitado:</b> {request.palavras_chave} (Quantidade: {request.quantidade})", estilo_corpo))
+    elementos.append(Spacer(1, 15))
+    
+    # Adiciona o resumo textual estruturado enviado pelo app
+    elementos.append(Paragraph("<b>Detalhamento do Orçamento:</b>", styles['Heading3']))
+    elementos.append(Spacer(1, 5))
+    elementos.append(Paragraph(request.relatorio_texto.replace("\n", "<br/>"), estilo_corpo))
     
     doc.build(elementos)
     buffer.seek(0)
