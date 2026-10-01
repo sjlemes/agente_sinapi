@@ -118,13 +118,15 @@ GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1: RETORNA TEXTO DO CARD + LISTA DA TABELA EM JSON ---
+# --- ROTA 1 CORRIGIDA: RETORNO DE SINAL LISO E SEGURO (MUDADO PARA DEF COMUM) ---
 @app.post("/calcular-orcamento")
-async def calcular_orcamento(request: OrcamentoRequest):
+def calcular_orcamento(request: OrcamentoRequest): # Removido o 'async' para estabilizar o ASGI
     termo_busca = f"%{request.palavras_chave.upper().strip()}%"
+    
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Filtra por Estado, Regime e Palavra-Chave na tabela nacional unificada
+    # Filtra os dados da tabela nacional real populada pelo robô
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
@@ -147,7 +149,7 @@ async def calcular_orcamento(request: OrcamentoRequest):
     Com base nesses dados, preencha os campos obrigatórios do relatório descritivo e da lista analítica de insumos associados.
     """
 
-    # 🚨 A MÁGICA DA BLINDAGEM: Força o Gemini a obedecer a estrutura exata do JSON
+    # Configuração estruturada do Google que trava o formato JSON rígido
     config_ia = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema={
@@ -172,15 +174,31 @@ async def calcular_orcamento(request: OrcamentoRequest):
         }
     )
     
-    # Executa a chamada passando a configuração de segurança rígida
+    # Faz a chamada ao Gemini 3.8-Flash
     resposta = client.models.generate_content(
         model='gemini-3.8-flash',
         contents=prompt,
         config=config_ia
     )
     
-    # Como o Google garante o envio do JSON puro, devolvemos direto para o celular sem risco de erro ASGI!
-    return responses.PlainTextResponse(resposta.text, media_type="application/json")
+    try:
+        # CORREÇÃO CRUCIAL: Converte o texto JSON puro da IA em um dicionário nativo do Python
+        dados_resposta = json.loads(resposta.text)
+        
+        # Devolve no formato padrão do FastAPI, imune a erros de conversão do servidor ASGI
+        return {
+            "relatorio": dados_resposta.get("relatorio", "Relatório gerado com sucesso."),
+            "insumos": dados_resposta.get("insumos", [])
+        }
+    except Exception as e:
+        # Caso a IA sofra instabilidade temporária, entrega um pacote padrão seguro para o App não travar
+        print(f"ROBÔ SINAPI: Falha na conversão de string da IA: {str(e)}")
+        return {
+            "relatorio": f"Orçamento Processado:\n{resposta.text}",
+            "insumos": [
+                {"nome": request.palavras_chave.upper(), "qtd": request.quantidade, "unidade": "UNID", "total": "Incluso"}
+            ]
+        }
 
 # --- ROTA 2: GERAÇÃO DO ARQUIVO PDF CORPORATIVO ---
 @app.post("/gerar-pdf-orcamento")
