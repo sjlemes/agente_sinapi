@@ -117,18 +117,15 @@ app = FastAPI(lifespan=lifespan)
 GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# --- ROTA 1: RETORNA TEXTO DO CARD + LISTA DA TABELA EM JSON ---
-# --- ROTA 1: BUSCA NACIONAL COMPACTA E BLINDADA ---
+# --- ROTA 1: CONSULTA COM VALIDAÇÃO EXPLÍCITA DE COLUNAS (BLINDADA) ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
-    # Transforma o termo em busca ampla por aproximação (Ex: %PINTURA%)
     termo_busca = f"%{request.palavras_chave.upper().strip()}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # BUSCA SIMPLIFICADA: Procura pela palavra-chave ou código em toda a base nacional real
-    # Removemos o filtro rígido de estado/regime direto no SQL para o banco nunca retornar vazio
+    # Busca simplificada na tabela nacional unificada
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
@@ -139,18 +136,34 @@ def calcular_orcamento(request: OrcamentoRequest):
     linhas_banco = cursor.fetchall()
     conn.close()
     
-    # Transforma as linhas reais encontradas em texto estruturado
-    contexto_banco_real = str(linhas_banco) if linhas_banco else "Nenhum item correspondente exato localizado."
+    # 🚨 VALIDAÇÃO EXPLÍCITA POR COLUNA (Mapeia linha por linha do banco de dados)
+    dados_estruturados_reais = []
+    if linhas_banco:
+        for linha in linhas_banco:
+            # Garante de forma rígida que a linha possui as 4 colunas esperadas do banco
+            if len(linha) >= 4:
+                codigo_val = str(linha[0]).strip()
+                desc_val = str(linha[1]).strip().upper()
+                unid_val = str(linha[2]).strip().upper()
+                preco_val = float(linha[3]) if linha[3] is not None else 0.0
+                
+                dados_estruturados_reais.append(
+                    f"Código: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço Unitário: R$ {preco_val:.2f}"
+                )
+    
+    # Transforma a lista limpa em uma string legível para a IA
+    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente exato localizado no SINAPI."
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
     prompt = f"""
     Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
-    O usuário quer um orçamento para: "{request.palavras_chave}" (Qtd: {request.quantidade}) no estado de interesse: {request.estado.upper()} sob o regime {regime_texto}.
+    O usuário quer um orçamento para o serviço: "{request.palavras_chave}" para executar a quantidade de: {request.quantidade}.
+    O estado de interesse é: {request.estado.upper().strip()} sob o regime de encargos: {regime_texto}.
     
-    Dados reais extraídos do nosso arquivo nacional do SINAPI:
+    Aqui estão os dados reais extraídos diretamente das tabelas oficiais da planilha nacional indexada:
     {contexto_banco_real}
     
-    Com base nesses dados, monte o orçamento. Se os dados acima contiverem preços, use-os como referência oficial.
+    Com base estritamente nessas referências, monte o orçamento. Se dados reais foram fornecidos acima, utilize o código e preço unitário deles.
     """
 
     config_ia = types.GenerateContentConfig(
@@ -186,7 +199,7 @@ def calcular_orcamento(request: OrcamentoRequest):
     try:
         dados_resposta = json.loads(resposta.text)
         return {
-            "relatorio": dados_resposta.get("relatorio", "Orçamento calculado."),
+            "relatorio": dados_resposta.get("relatorio", "Orçamento gerado."),
             "insumos": dados_resposta.get("insumos", [])
         }
     except Exception as e:
