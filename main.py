@@ -1,8 +1,8 @@
 import os
 import io
+import json
 import sqlite3
 import pandas as pd
-import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, responses
 from pydantic import BaseModel
@@ -15,7 +15,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- MODELO DE DADOS ENVIADO PELO APP ---
+# --- MODELOS DE DADOS ---
 class OrcamentoRequest(BaseModel):
     estado: str
     palavras_chave: str
@@ -29,11 +29,10 @@ class PDFRequest(BaseModel):
     desonerado: bool
     relatorio_texto: str
 
-# --- INICIALIZAÇÃO E LEITURA DA PLANILHA NACIONAL PROTEGIDA (LIFESPAN) ---
+# --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (PREENCHE O BANCO) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("ROBÔ SINAPI: Inicializando leitura da planilha nacional unificada...")
-    
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -59,20 +58,15 @@ async def lifespan(app: FastAPI):
             
             for nome_aba in excel_file.sheet_names:
                 nome_aba_upper = nome_aba.upper().strip()
-                
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
-                    print(f"ROBÔ SINAPI: Ignorando aba decorativa [{nome_aba}].")
                     continue
                 
                 if len(nome_aba_upper) >= 2:
                     estado_aba = nome_aba_upper[:2]
                     regime_aba = "DESONERADO" if "DES" in nome_aba_upper and "NDES" not in nome_aba_upper else "NÃO DESONERADO"
                     
-                    print(f"ROBÔ SINAPI: Indexando dados de {estado_aba} ({regime_aba}) da aba [{nome_aba}]...")
                     df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
-                    
                     for _, linha in df.iterrows():
-                        # LÓGICA DE PROTEÇÃO DE ÍNDICES CONTRA CÉLULAS VAZIAS (EVITA ERRO ASGI) [1.2]
                         if len(linha) > 0 and pd.notna(linha.iloc[0]) and str(linha.iloc[0]).strip().isdigit():
                             preco = 0.0
                             if len(linha) > 7 and pd.notna(linha.iloc[7]):
@@ -93,23 +87,16 @@ async def lifespan(app: FastAPI):
                                 regime_aba
                             ))
             conn.commit()
-            print("ROBÔ SINAPI: Base Nacional SQLite populada com dados de engenharia reais!")
+            print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso!")
         else:
-            print(f"ROBÔ SINAPI: Arquivo {nome_arquivo_local} não localizado na raiz.")
             raise FileNotFoundError()
-
     except Exception as e:
-        print(f"ROBÔ SINAPI: Erro ao processar Planilha Nacional: {str(e)}")
+        print(f"ROBÔ SINAPI: Fallback de segurança ativo: {str(e)}")
         cursor.execute("DELETE FROM composicoes")
-        cursor.execute("""
-            INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
-            VALUES ('RJ', '87528', 'ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO', 'M²', 45.50, 'NÃO DESONERADO')
-        """)
+        cursor.execute("INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime) VALUES ('RJ', '87528', 'ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO', 'M²', 45.50, 'NÃO DESONERADO')")
         conn.commit()
     finally:
         conn.close()
-        print("ROBÔ SINAPI: Inicialização concluída!")
-    
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -117,15 +104,13 @@ app = FastAPI(lifespan=lifespan)
 GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# --- ROTA 1: CONSULTA COM VALIDAÇÃO EXPLÍCITA DE COLUNAS (BLINDADA) ---
+# --- 2. SUA ROTA DE CONSULTA DA IA COM VALIDAÇÃO DE COLUNAS DO SQLITE ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
     termo_busca = f"%{request.palavras_chave.upper().strip()}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
-    
-    # Busca simplificada na tabela nacional unificada
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
@@ -136,11 +121,10 @@ def calcular_orcamento(request: OrcamentoRequest):
     linhas_banco = cursor.fetchall()
     conn.close()
     
-    # 🚨 VALIDAÇÃO EXPLÍCITA POR COLUNA (Mapeia linha por linha do banco de dados)
+    # 🚨 AQUI ESTAVA O SEU ACERTO ESQUECIDO: Mapeando coluna por coluna explicitamente!
     dados_estruturados_reais = []
     if linhas_banco:
         for linha in linhas_banco:
-            # Garante de forma rígida que a linha possui as 4 colunas esperadas do banco
             if len(linha) >= 4:
                 codigo_val = str(linha[0]).strip()
                 desc_val = str(linha[1]).strip().upper()
@@ -151,16 +135,15 @@ def calcular_orcamento(request: OrcamentoRequest):
                     f"Código: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço Unitário: R$ {preco_val:.2f}"
                 )
     
-    # Transforma a lista limpa em uma string legível para a IA
-    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente exato localizado no SINAPI."
+    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente localizado no SINAPI."
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
     prompt = f"""
     Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
-    O usuário quer um orçamento para o serviço: "{request.palavras_chave}" para executar a quantidade de: {request.quantidade}.
-    O estado de interesse é: {request.estado.upper().strip()} sob o regime de encargos: {regime_texto}.
+    O usuário quer um orçamento para o serviço: "{request.palavras_chave}" para a quantidade de: {request.quantidade}.
+    O estado de interesse é: {request.estado.upper().strip()} sob o regime: {regime_texto}.
     
-    Aqui estão os dados reais extraídos diretamente das tabelas oficiais da planilha nacional indexada:
+    Dados reais extraídos diretamente das tabelas oficiais da planilha nacional indexada:
     {contexto_banco_real}
     
     Com base estritamente nessas referências, monte o orçamento. Se dados reais foram fornecidos acima, utilize o código e preço unitário deles.
@@ -190,11 +173,7 @@ def calcular_orcamento(request: OrcamentoRequest):
         }
     )
     
-    resposta = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt,
-        config=config_ia
-    )
+    resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt, config=config_ia)
     
     try:
         dados_resposta = json.loads(resposta.text)
@@ -203,13 +182,12 @@ def calcular_orcamento(request: OrcamentoRequest):
             "insumos": dados_resposta.get("insumos", [])
         }
     except Exception as e:
-        print(f"ROBÔ SINAPI: Fallback ativo de conversão: {str(e)}")
         return {
             "relatorio": f"Orçamento Processado:\n{resposta.text}",
             "insumos": [{"nome": request.palavras_chave.upper(), "qtd": request.quantidade, "unidade": "UNID", "total": "OK"}]
         }
 
-# --- ROTA 2: GERAÇÃO DO ARQUIVO PDF CORPORATIVO ---
+# --- 3. SUA ROTA DE GERAÇÃO DO PDF CORPORATIVO ---
 @app.post("/gerar-pdf-orcamento")
 async def gerar_pdf_orcamento(request: PDFRequest):
     buffer = io.BytesIO()
