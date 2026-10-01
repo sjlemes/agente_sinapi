@@ -104,7 +104,7 @@ app = FastAPI(lifespan=lifespan)
 GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# --- 2. SUA ROTA DE CONSULTA DA IA COM VALIDAÇÃO DE COLUNAS DO SQLITE ---
+# --- ROTA 1 DE PRODUÇÃO: PROTEGIDA CONTRA INSTABILIDADES DO GOOGLE ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
     termo_busca = f"%{request.palavras_chave.upper().strip()}%"
@@ -121,7 +121,6 @@ def calcular_orcamento(request: OrcamentoRequest):
     linhas_banco = cursor.fetchall()
     conn.close()
     
-    # 🚨 AQUI ESTAVA O SEU ACERTO ESQUECIDO: Mapeando coluna por coluna explicitamente!
     dados_estruturados_reais = []
     if linhas_banco:
         for linha in linhas_banco:
@@ -130,23 +129,18 @@ def calcular_orcamento(request: OrcamentoRequest):
                 desc_val = str(linha[1]).strip().upper()
                 unid_val = str(linha[2]).strip().upper()
                 preco_val = float(linha[3]) if linha[3] is not None else 0.0
-                
                 dados_estruturados_reais.append(
                     f"Código: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço Unitário: R$ {preco_val:.2f}"
                 )
     
-    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente localizado no SINAPI."
+    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item localizado."
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
     prompt = f"""
-    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
-    O usuário quer um orçamento para o serviço: "{request.palavras_chave}" para a quantidade de: {request.quantidade}.
-    O estado de interesse é: {request.estado.upper().strip()} sob o regime: {regime_texto}.
-    
-    Dados reais extraídos diretamente das tabelas oficiais da planilha nacional indexada:
+    Você é um Engenheiro de Custos especialista no SINAPI da Caixa.
+    O usuário quer um orçamento para: "{request.palavras_chave}" (Quantidade: {request.quantidade}) no estado: {request.estado.upper()} ({regime_texto}).
+    Dados reais extraídos do SQLite:
     {contexto_banco_real}
-    
-    Com base estritamente nessas referências, monte o orçamento. Se dados reais foram fornecidos acima, utilize o código e preço unitário deles.
     """
 
     config_ia = types.GenerateContentConfig(
@@ -173,18 +167,26 @@ def calcular_orcamento(request: OrcamentoRequest):
         }
     )
     
-    resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt, config=config_ia)
-    
+    # 🚨 O ESCUDO PROTOCOLO: Se o Google falhar por alta demanda, o Python captura e impede o Erro 500 do ASGI
     try:
+        resposta = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt,
+            config=config_ia
+        )
         dados_resposta = json.loads(resposta.text)
         return {
-            "relatorio": dados_resposta.get("relatorio", "Orçamento gerado."),
+            "relatorio": dados_resposta.get("relatorio", "Orçamento calculado."),
             "insumos": dados_resposta.get("insumos", [])
         }
     except Exception as e:
+        print(f"ROBÔ SINAPI: Instabilidade detectada na API do Google: {str(e)}")
+        # Retorna um pacote amigável avisando o celular do congestionamento, impedindo o travamento do app!
         return {
-            "relatorio": f"Orçamento Processado:\n{resposta.text}",
-            "insumos": [{"nome": request.palavras_chave.upper(), "qtd": request.quantidade, "unidade": "UNID", "total": "OK"}]
+            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura no Render e o Banco SQLite estão 100% operacionais. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
+            "insumos": [
+                {"nome": "Servidor do Google Ocupado", "qtd": 0.0, "unidade": "Erro", "total": "Tente de Novo"}
+            ]
         }
 
 # --- 3. SUA ROTA DE GERAÇÃO DO PDF CORPORATIVO ---
