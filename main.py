@@ -31,6 +31,7 @@ class PDFRequest(BaseModel):
 
 # --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (PREENCHE O BANCO) ---
 # --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (COM TRATAMENTO DE TEXTO BRUTO) ---
+# --- 1. SEU ROBÔ NACIONAL CORRIGIDO (SALVAMENTO GLOBAL SEM CORTE DE ABA) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("ROBÔ SINAPI: Inicializando leitura da planilha nacional unificada...")
@@ -62,37 +63,36 @@ async def lifespan(app: FastAPI):
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
                     continue
                 
-                if len(nome_aba_upper) >= 2:
-                    estado_aba = nome_aba_upper[:2]
-                    regime_aba = "DESONERADO" if "DES" in nome_aba_upper and "NDES" not in nome_aba_upper else "NÃO DESONERADO"
-                    
-                    print(f"ROBÔ SINAPI: Lendo a aba [{nome_aba}]...")
-                    df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
-                    
-                    for _, linha in df.iterrows():
-                        # TRATAMENTO DE DADOS COLETADOS DO EXCEL
-                        if len(linha) > 0:
-                            # Tenta localizar o código removendo decimais extras (.0) comuns do Pandas
-                            val_codigo = str(linha.iloc).strip() if pd.notna(linha.iloc) else ""
-                            if val_codigo.endswith(".0"):
-                                val_codigo = val_codigo[:-2]
+                # CORREÇÃO CRUCIAL: Identifica se a aba é de Composição ou Insumo pelo nome
+                regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
+                
+                print(f"ROBÔ SINAPI: Lendo e extraindo linhas analíticas da aba [{nome_aba}]...")
+                df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
+                
+                for _, linha in df.iterrows():
+                    if len(linha) > 0:
+                        # Limpa o código removendo o ponto decimal (.0) gerado pelo Pandas
+                        val_codigo = str(linha.iloc).strip() if pd.notna(linha.iloc) else ""
+                        if val_codigo.endswith(".0"):
+                            val_codigo = val_codigo[:-2]
 
-                            # Só insere se achou um número de código válido
-                            if val_codigo.isdigit():
-                                desc_val = str(linha.iloc).upper().strip() if len(linha) > 1 and pd.notna(linha.iloc) else ""
-                                unid_val = str(linha.iloc).upper().strip() if len(linha) > 2 and pd.notna(linha.iloc) else "-"
-                                
-                                preco = 0.0
-                                if len(linha) > 7 and pd.notna(linha.iloc):
-                                    try:
-                                        preco = float(linha.iloc)
-                                    except:
-                                        preco = 0.0
-                                        
-                                cursor.execute("""
-                                    INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                """, (estado_aba, val_codigo, desc_val, unid_val, preco, regime_aba))
+                        # Se achou um código válido do SINAPI, insere na base global
+                        if val_codigo.isdigit():
+                            desc_val = str(linha.iloc).upper().strip() if len(linha) > 1 and pd.notna(linha.iloc) else ""
+                            unid_val = str(linha.iloc).upper().strip() if len(linha) > 2 and pd.notna(linha.iloc) else "-"
+                            
+                            preco = 0.0
+                            if len(linha) > 7 and pd.notna(linha.iloc):
+                                try:
+                                    preco = float(linha.iloc)
+                                except:
+                                    preco = 0.0
+                                    
+                            # Guardamos de forma global para a busca por palavra e código funcionar direto
+                            cursor.execute("""
+                                INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, ("NACIONAL", val_codigo, desc_val, unid_val, preco, regime_aba))
             conn.commit()
             print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso!")
         else:
@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"ROBÔ SINAPI: Fallback de segurança ativo: {str(e)}")
         cursor.execute("DELETE FROM composicoes")
-        cursor.execute("INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime) VALUES ('RJ', '87528', 'ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO', 'M²', 45.50, 'NÃO DESONERADO')")
+        cursor.execute("INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime) VALUES ('NACIONAL', '87528', 'ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO', 'M²', 45.50, 'NÃO DESONERADO')")
         conn.commit()
     finally:
         conn.close()
@@ -113,42 +113,45 @@ client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1 DE PRODUÇÃO: PROTEGIDA CONTRA INSTABILIDADES DO GOOGLE ---
 # --- 2. SUA ROTA DE CONSULTA DA IA COM BUSCA AMPLA POR APROXIMAÇÃO ---
+# --- 2. SUA ROTA DE CONSULTA DA IA ATUALIZADA (BUSCA AMPLA GLOBAL) ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
-    # Trata a entrada removendo espaços e forçando maiúsculas
     termo_limpo = request.palavras_chave.strip()
     termo_busca_like = f"%{termo_limpo.upper()}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # BUSCA BLINDADA: Tenta achar correspondência exata do código OU aproximação do texto
+    # Busca focada puramente na identificação do código ou da palavra-chave textual
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
         WHERE codigo = ? OR descricao LIKE ?
-        LIMIT 15
+        LIMIT 25
     """, (termo_limpo, termo_busca_like))
     
     linhas_banco = cursor.fetchall()
     conn.close()
     
     dados_estruturados_reais = []
-    if lines_banco := linhas_banco:
-        for linha in lines_banco:
+    if linhas_banco:
+        for linha in linhas_banco:
             if len(linha) >= 4:
                 dados_estruturados_reais.append(
-                    f"Código: {str(linha)} | Descrição: {str(linha)} | Unidade: {str(linha)} | Preço Unitário: R$ {float(linha):.2f}"
+                    f"Código: {str(linha).strip()} | Descrição: {str(linha).strip().upper()} | Unidade: {str(linha).strip().upper()} | Preço Unitário: R$ {float(linha):.2f}"
                 )
     
     contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente localizado no SINAPI."
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
     prompt = f"""
-    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa.
+    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
     O usuário quer um orçamento para: "{request.palavras_chave}" (Quantidade: {request.quantidade}) no estado: {request.estado.upper()} ({regime_texto}).
-    Dados reais extraídos do SQLite:
+    
+    Dados reais extraídos diretamente das planilhas oficiais indexadas:
     {contexto_banco_real}
+    
+    Com base estritamente nessas referências reais fornecidas acima, monte o orçamento. Use o preço unitário e descrição encontrados no banco.
     """
 
     config_ia = types.GenerateContentConfig(
