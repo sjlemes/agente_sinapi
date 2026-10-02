@@ -32,20 +32,16 @@ class PDFRequest(BaseModel):
 # --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (PREENCHE O BANCO) ---
 # --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (COM TRATAMENTO DE TEXTO BRUTO) ---
 # --- 1. SEU ROBÔ NACIONAL CORRIGIDO (SALVAMENTO GLOBAL SEM CORTE DE ABA) ---
+# --- SUBSTiTUA APENAS O BLOCO DO LIFESPAN NO SEU MAIN.PY ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ROBÔ SINAPI: Inicializando leitura da planilha nacional unificada...")
+    print("ROBÔ SINAPI: Inicializando banco nacional unificado...")
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS composicoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            estado TEXT,
-            codigo TEXT,
-            descricao TEXT,
-            unidade TEXT,
-            preco_unitario REAL,
-            regime TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, estado TEXT, codigo TEXT,
+            descricao TEXT, unidade TEXT, preco_unitario REAL, regime TEXT
         )
     """)
     conn.commit()
@@ -54,7 +50,7 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.path.exists(nome_arquivo_local):
-            print(f"ROBÔ SINAPI: Localizado arquivo unificado {nome_arquivo_local}. Iniciando indexação...")
+            print(f"ROBÔ SINAPI: Indexando arquivo {nome_arquivo_local}...")
             excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl")
             cursor.execute("DELETE FROM composicoes")
             
@@ -63,45 +59,43 @@ async def lifespan(app: FastAPI):
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
                     continue
                 
-                # CORREÇÃO CRUCIAL: Identifica se a aba é de Composição ou Insumo pelo nome
                 regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                
-                print(f"ROBÔ SINAPI: Lendo e extraindo linhas analíticas da aba [{nome_aba}]...")
                 df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
                 
                 for _, linha in df.iterrows():
-                    if len(linha) > 0:
-                        # Limpa o código removendo o ponto decimal (.0) gerado pelo Pandas
-                        val_codigo = str(linha.iloc).strip() if pd.notna(linha.iloc) else ""
+                    # 🚨 CONFIGURAÇÃO POSICIONAL DAS COLUNAS DO ARQUIVO NACIONAL DA CAIXA
+                    if len(linha) >= 5:
+                        # Coluna 0 (A) = Sigla do Estado (UF)
+                        estado_registro = str(linha.iloc[0]).strip().upper() if pd.notna(linha.iloc[0]) else "NACIONAL"
+                        
+                        # Coluna 2 (C) = O código numérico do SINAPI
+                        val_codigo = str(linha.iloc[2]).strip() if pd.notna(linha.iloc[2]) else ""
                         if val_codigo.endswith(".0"):
                             val_codigo = val_codigo[:-2]
 
-                        # Se achou um código válido do SINAPI, insere na base global
+                        # Se achou o código numérico na coluna C, mapeia o restante da linha
                         if val_codigo.isdigit():
-                            desc_val = str(linha.iloc).upper().strip() if len(linha) > 1 and pd.notna(linha.iloc) else ""
-                            unid_val = str(linha.iloc).upper().strip() if len(linha) > 2 and pd.notna(linha.iloc) else "-"
+                            # Coluna 3 (D) = Descrição | Coluna 4 (E) = Unidade
+                            desc_val = str(linha.iloc[3]).upper().strip() if pd.notna(linha.iloc[3]) else ""
+                            unid_val = str(linha.iloc[4]).upper().strip() if pd.notna(linha.iloc[4]) else "-"
                             
+                            # Procura o preço bruto float navegando pelas colunas finais
                             preco = 0.0
-                            if len(linha) > 7 and pd.notna(linha.iloc):
-                                try:
-                                    preco = float(linha.iloc)
-                                except:
-                                    preco = 0.0
-                                    
-                            # Guardamos de forma global para a busca por palavra e código funcionar direto
+                            for i in range(5, len(linha)):
+                                if pd.notna(linha.iloc[i]) and isinstance(linha.iloc[i], (int, float)):
+                                    preco = float(linha.iloc[i])
+                                    break
+                                        
                             cursor.execute("""
                                 INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
                                 VALUES (?, ?, ?, ?, ?, ?)
-                            """, ("NACIONAL", val_codigo, desc_val, unid_val, preco, regime_aba))
+                            """, (estado_registro, val_codigo, desc_val, unid_val, preco, regime_aba))
             conn.commit()
-            print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso!")
+            print("ROBÔ SINAPI: Base Nacional SQLite populada com dados reais das colunas corretas!")
         else:
             raise FileNotFoundError()
     except Exception as e:
-        print(f"ROBÔ SINAPI: Fallback de segurança ativo: {str(e)}")
-        cursor.execute("DELETE FROM composicoes")
-        cursor.execute("INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime) VALUES ('NACIONAL', '87528', 'ALVENARIA DE VEDAÇÃO DE BLOCO CERÂMICO FURADO', 'M²', 45.50, 'NÃO DESONERADO')")
-        conn.commit()
+        print(f"ROBÔ SINAPI: Erro ao indexar arquivo: {str(e)}")
     finally:
         conn.close()
     yield
@@ -126,9 +120,9 @@ def calcular_orcamento(request: OrcamentoRequest):
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
-        WHERE codigo = ? OR descricao LIKE ?
+        WHERE (codigo = ? OR descricao LIKE ?) AND estado = ? AND regime = ?
         LIMIT 25
-    """, (termo_limpo, termo_busca_like))
+    """, (termo_limpo, termo_busca_like, request.estado.upper().strip(), "DESONERADO" if request.desonerado else "NÃO DESONERADO"))
     
     linhas_banco = cursor.fetchall()
     conn.close()
