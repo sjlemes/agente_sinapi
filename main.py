@@ -30,6 +30,7 @@ class PDFRequest(BaseModel):
     relatorio_texto: str
 
 # --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (PREENCHE O BANCO) ---
+# --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (COM TRATAMENTO DE TEXTO BRUTO) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("ROBÔ SINAPI: Inicializando leitura da planilha nacional unificada...")
@@ -65,27 +66,33 @@ async def lifespan(app: FastAPI):
                     estado_aba = nome_aba_upper[:2]
                     regime_aba = "DESONERADO" if "DES" in nome_aba_upper and "NDES" not in nome_aba_upper else "NÃO DESONERADO"
                     
+                    print(f"ROBÔ SINAPI: Lendo a aba [{nome_aba}]...")
                     df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
+                    
                     for _, linha in df.iterrows():
-                        if len(linha) > 0 and pd.notna(linha.iloc[0]) and str(linha.iloc[0]).strip().isdigit():
-                            preco = 0.0
-                            if len(linha) > 7 and pd.notna(linha.iloc[7]):
-                                try:
-                                    preco = float(linha.iloc[7])
-                                except:
-                                    preco = 0.0
-                                    
-                            cursor.execute("""
-                                INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            """, (
-                                estado_aba,
-                                str(linha.iloc[0]).strip(),
-                                str(linha.iloc[1]).upper().strip(),
-                                str(linha.iloc[2]).upper().strip() if len(linha) > 2 and pd.notna(linha.iloc[2]) else "-",
-                                preco,
-                                regime_aba
-                            ))
+                        # TRATAMENTO DE DADOS COLETADOS DO EXCEL
+                        if len(linha) > 0:
+                            # Tenta localizar o código removendo decimais extras (.0) comuns do Pandas
+                            val_codigo = str(linha.iloc).strip() if pd.notna(linha.iloc) else ""
+                            if val_codigo.endswith(".0"):
+                                val_codigo = val_codigo[:-2]
+
+                            # Só insere se achou um número de código válido
+                            if val_codigo.isdigit():
+                                desc_val = str(linha.iloc).upper().strip() if len(linha) > 1 and pd.notna(linha.iloc) else ""
+                                unid_val = str(linha.iloc).upper().strip() if len(linha) > 2 and pd.notna(linha.iloc) else "-"
+                                
+                                preco = 0.0
+                                if len(linha) > 7 and pd.notna(linha.iloc):
+                                    try:
+                                        preco = float(linha.iloc)
+                                    except:
+                                        preco = 0.0
+                                        
+                                cursor.execute("""
+                                    INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                """, (estado_aba, val_codigo, desc_val, unid_val, preco, regime_aba))
             conn.commit()
             print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso!")
         else:
@@ -105,39 +112,40 @@ GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1 DE PRODUÇÃO: PROTEGIDA CONTRA INSTABILIDADES DO GOOGLE ---
+# --- 2. SUA ROTA DE CONSULTA DA IA COM BUSCA AMPLA POR APROXIMAÇÃO ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
-    termo_busca = f"%{request.palavras_chave.upper().strip()}%"
+    # Trata a entrada removendo espaços e forçando maiúsculas
+    termo_limpo = request.palavras_chave.strip()
+    termo_busca_like = f"%{termo_limpo.upper()}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
+    
+    # BUSCA BLINDADA: Tenta achar correspondência exata do código OU aproximação do texto
     cursor.execute("""
         SELECT codigo, descricao, unidade, preco_unitario 
         FROM composicoes 
-        WHERE descricao LIKE ? OR codigo = ?
+        WHERE codigo = ? OR descricao LIKE ?
         LIMIT 15
-    """, (termo_busca, request.palavras_chave.strip()))
+    """, (termo_limpo, termo_busca_like))
     
     linhas_banco = cursor.fetchall()
     conn.close()
     
     dados_estruturados_reais = []
-    if linhas_banco:
-        for linha in linhas_banco:
+    if lines_banco := linhas_banco:
+        for linha in lines_banco:
             if len(linha) >= 4:
-                codigo_val = str(linha[0]).strip()
-                desc_val = str(linha[1]).strip().upper()
-                unid_val = str(linha[2]).strip().upper()
-                preco_val = float(linha[3]) if linha[3] is not None else 0.0
                 dados_estruturados_reais.append(
-                    f"Código: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço Unitário: R$ {preco_val:.2f}"
+                    f"Código: {str(linha)} | Descrição: {str(linha)} | Unidade: {str(linha)} | Preço Unitário: R$ {float(linha):.2f}"
                 )
     
-    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item localizado."
+    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente localizado no SINAPI."
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     
     prompt = f"""
-    Você é um Engenheiro de Custos especialista no SINAPI da Caixa.
+    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa.
     O usuário quer um orçamento para: "{request.palavras_chave}" (Quantidade: {request.quantidade}) no estado: {request.estado.upper()} ({regime_texto}).
     Dados reais extraídos do SQLite:
     {contexto_banco_real}
@@ -167,27 +175,17 @@ def calcular_orcamento(request: OrcamentoRequest):
         }
     )
     
-    # 🚨 O ESCUDO PROTOCOLO: Se o Google falhar por alta demanda, o Python captura e impede o Erro 500 do ASGI
     try:
-        resposta = client.models.generate_content(
-            #model='gemini-3.8-flash',
-            model='gemini-3.7-flash',
-            contents=prompt,
-            config=config_ia
-        )
+        resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt, config=config_ia)
         dados_resposta = json.loads(resposta.text)
         return {
             "relatorio": dados_resposta.get("relatorio", "Orçamento calculado."),
             "insumos": dados_resposta.get("insumos", [])
         }
     except Exception as e:
-        print(f"ROBÔ SINAPI: Instabilidade detectada na API do Google: {str(e)}")
-        # Retorna um pacote amigável avisando o celular do congestionamento, impedindo o travamento do app!
         return {
-            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura no Render e o Banco SQLite estão 100% operacionais. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
-            "insumos": [
-                {"nome": "Servidor do Google Ocupado", "qtd": 0.0, "unidade": "Erro", "total": "Tente de Novo"}
-            ]
+            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado. Tente novamente em alguns segundos.",
+            "insumos": [{"nome": "Servidor Ocupado", "qtd": 0.0, "unidade": "Erro", "total": "Repita"}]
         }
 
 # --- 3. SUA ROTA DE GERAÇÃO DO PDF CORPORATIVO ---
