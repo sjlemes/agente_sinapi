@@ -29,13 +29,10 @@ class PDFRequest(BaseModel):
     desonerado: bool
     relatorio_texto: str
 
-# --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (PREENCHE O BANCO) ---
-# --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (COM TRATAMENTO DE TEXTO BRUTO) ---
-# --- 1. SEU ROBÔ NACIONAL CORRIGIDO (SALVAMENTO GLOBAL SEM CORTE DE ABA) ---
-# --- SUBSTiTUA APENAS O BLOCO DO LIFESPAN NO SEU MAIN.PY ---
+# --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (OLAHNDO NOME DAS COLUNAS) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ROBÔ SINAPI: Inicializando banco nacional unificado...")
+    print("ROBÔ SINAPI: Inicializando banco nacional unificado por cabeçalhos...")
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -60,38 +57,51 @@ async def lifespan(app: FastAPI):
                     continue
                 
                 regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4)
+                print(f"ROBÔ SINAPI: Mapeando cabeçalhos analíticos da aba [{nome_aba}]...")
                 
-                for _, linha in df.iterrows():
-                    # 🚨 CONFIGURAÇÃO POSICIONAL DAS COLUNAS DO ARQUIVO NACIONAL DA CAIXA
-                    if len(linha) >= 5:
-                        # Coluna 0 (A) = Sigla do Estado (UF)
-                        estado_registro = str(linha.iloc[0]).strip().upper() if pd.notna(linha.iloc[0]) else "NACIONAL"
-                        
-                        # Coluna 2 (C) = O código numérico do SINAPI
-                        val_codigo = str(linha.iloc[2]).strip() if pd.notna(linha.iloc[2]) else ""
+                # Lê a planilha mantendo a linha 4 como o cabeçalho real (nomes das colunas)
+                df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4, engine="openpyxl")
+                
+                # Padroniza o nome de todas as colunas para letras maiúsculas e sem espaços (Evita erros de digitação da CEF)
+                df.columns = [str(c).upper().strip() for c in df.columns]
+                
+                # Procura de forma dinâmica em qual coluna o Código e o Preço estão escondidos
+                col_codigo = next((c for c in df.columns if "CODIGO" in c or "CÓDIGO" in c), None)
+                col_descricao = next((c for c in df.columns if "DESCRICAO" in c or "DESCRIÇÃO" in c), None)
+                col_unidade = next((c for c in df.columns if "UNIDADE" in c), None)
+                col_preco = next((c for c in df.columns if "PRECO" in c or "PREÇO" in c or "CUSTO" in c or "VALOR" in c), None)
+                col_estado = next((c for c in df.columns if "UF" in c or "ESTADO" in c), None)
+
+                # Se o robô localizou a estrutura mínima de colunas, varre as linhas por nome
+                if col_codigo and col_descricao:
+                    print(f"ROBÔ SINAPI: Colunas identificadas -> Código: [{col_codigo}], Preço: [{col_preco}]")
+                    
+                    for _, linha in df.iterrows():
+                        # Captura e limpa o código independente da coluna onde ele esteja
+                        val_codigo = str(linha[col_codigo]).strip() if pd.notna(linha[col_codigo]) else ""
                         if val_codigo.endswith(".0"):
                             val_codigo = val_codigo[:-2]
-
-                        # Se achou o código numérico na coluna C, mapeia o restante da linha
+                        
+                        # Se encontrou o código numérico válido, salva a linha com os dados mapeados
                         if val_codigo.isdigit():
-                            # Coluna 3 (D) = Descrição | Coluna 4 (E) = Unidade
-                            desc_val = str(linha.iloc[3]).upper().strip() if pd.notna(linha.iloc[3]) else ""
-                            unid_val = str(linha.iloc[4]).upper().strip() if pd.notna(linha.iloc[4]) else "-"
+                            estado_registro = str(linha[col_estado]).strip().upper() if col_estado and pd.notna(linha[col_estado]) else "NACIONAL"
+                            desc_val = str(linha[col_descricao]).upper().strip() if pd.notna(linha[col_descricao]) else ""
+                            unid_val = str(linha[col_unidade]).upper().strip() if col_unidade and pd.notna(linha[col_unidade]) else "-"
                             
-                            # Procura o preço bruto float navegando pelas colunas finais
                             preco = 0.0
-                            for i in range(5, len(linha)):
-                                if pd.notna(linha.iloc[i]) and isinstance(linha.iloc[i], (int, float)):
-                                    preco = float(linha.iloc[i])
-                                    break
-                                        
+                            if col_preco and pd.notna(linha[col_preco]):
+                                try:
+                                    preco = float(linha[col_preco])
+                                except:
+                                    preco = 0.0
+                                    
                             cursor.execute("""
                                 INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
                                 VALUES (?, ?, ?, ?, ?, ?)
                             """, (estado_registro, val_codigo, desc_val, unid_val, preco, regime_aba))
+            
             conn.commit()
-            print("ROBÔ SINAPI: Base Nacional SQLite populada com dados reais das colunas corretas!")
+            print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso usando Mapeamento por Nomes!")
         else:
             raise FileNotFoundError()
     except Exception as e:
