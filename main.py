@@ -29,16 +29,27 @@ class PDFRequest(BaseModel):
     desonerado: bool
     relatorio_texto: str
 
-# --- 1. SEU ROBÔ NACIONAL DE INICIALIZAÇÃO (OLAHNDO NOME DAS COLUNAS) ---
+# --- CARREGAMENTO RELACIONAL, MULTIINDEX E GUARDIÃO DE LAYOUT (LIFESPAN) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ROBÔ SINAPI: Inicializando banco nacional unificado por cabeçalhos...")
+    print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite...")
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
+    
+    # Criação das 3 tabelas interligadas oficiais
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS composicoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, estado TEXT, codigo TEXT,
-            descricao TEXT, unidade TEXT, preco_unitario REAL, regime TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT UNIQUE, descricao TEXT, unidade TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS insumos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, estado TEXT, codigo TEXT, descricao TEXT, unidade TEXT, preco_unitario REAL, regime TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analitico (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, codigo_composicao TEXT, codigo_insumo TEXT, descricao_insumo TEXT, unidade_insumo TEXT, coeficiente REAL
         )
     """)
     conn.commit()
@@ -47,65 +58,114 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.path.exists(nome_arquivo_local):
-            print(f"ROBÔ SINAPI: Indexando arquivo {nome_arquivo_local}...")
+            print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando Validação de Layout...")
             excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl")
+            
+            # --- 🚨 O GUARDIÃO DE LAYOUT: CHECAGEM DE SEGURANÇA SE AS ABAS EXISTEM ---
+            abas_obrigatorias = ["CSD", "CCD", "ISD", "ICD", "ANALÍTICO"]
+            abas_arquivo = [str(a).upper().strip() for a in excel_file.sheet_names]
+            for aba in abas_obrigatorias:
+                if aba not in abas_arquivo:
+                    print(f"⚠️ [ALERTA DO GUARDIÃO]: Aba obrigatória [{aba}] não localizada! Abortando indexação automática.")
+                    raise ValueError(f"Estrutura de abas inválida. Falta a aba {aba}")
+            
             cursor.execute("DELETE FROM composicoes")
+            cursor.execute("DELETE FROM insumos")
+            cursor.execute("DELETE FROM analitico")
             
             for nome_aba in excel_file.sheet_names:
                 nome_aba_upper = nome_aba.upper().strip()
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
                     continue
-                
-                regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                print(f"ROBÔ SINAPI: Mapeando cabeçalhos analíticos da aba [{nome_aba}]...")
-                
-                # Lê a planilha mantendo a linha 4 como o cabeçalho real (nomes das colunas)
-                df = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=4, engine="openpyxl")
-                
-                # Padroniza o nome de todas as colunas para letras maiúsculas e sem espaços (Evita erros de digitação da CEF)
-                df.columns = [str(c).upper().strip() for c in df.columns]
-                
-                # Procura de forma dinâmica em qual coluna o Código e o Preço estão escondidos
-                col_codigo = next((c for c in df.columns if "CODIGO" in c or "CÓDIGO" in c), None)
-                col_descricao = next((c for c in df.columns if "DESCRICAO" in c or "DESCRIÇÃO" in c), None)
-                col_unidade = next((c for c in df.columns if "UNIDADE" in c), None)
-                col_preco = next((c for c in df.columns if "PRECO" in c or "PREÇO" in c or "CUSTO" in c or "VALOR" in c), None)
-                col_estado = next((c for c in df.columns if "UF" in c or "ESTADO" in c), None)
 
-                # Se o robô localizou a estrutura mínima de colunas, varre as linhas por nome
-                if col_codigo and col_descricao:
-                    print(f"ROBÔ SINAPI: Colunas identificadas -> Código: [{col_codigo}], Preço: [{col_preco}]")
+                # 🧠 1. PROCESSAMENTO DE COMPOSIÇÕES E INSUMOS COM CABEÇALHO DUPLO (LINHAS 9 E 10)
+                if nome_aba_upper in ["CSD", "CCD", "ISD", "ICD"]:
+                    regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
+                    print(f"ROBÔ SINAPI: Desmesclando e lendo cabeçalho duplo da aba [{nome_aba}]...")
                     
-                    for _, linha in df.iterrows():
-                        # Captura e limpa o código independente da coluna onde ele esteja
-                        val_codigo = str(linha[col_codigo]).strip() if pd.notna(linha[col_codigo]) else ""
-                        if val_codigo.endswith(".0"):
-                            val_codigo = val_codigo[:-2]
-                        
-                        # Se encontrou o código numérico válido, salva a linha com os dados mapeados
-                        if val_codigo.isdigit():
-                            estado_registro = str(linha[col_estado]).strip().upper() if col_estado and pd.notna(linha[col_estado]) else "NACIONAL"
-                            desc_val = str(linha[col_descricao]).upper().strip() if pd.notna(linha[col_descricao]) else ""
-                            unid_val = str(linha[col_unidade]).upper().strip() if col_unidade and pd.notna(linha[col_unidade]) else "-"
+                    # LER MULTIINDEX: Junta a linha 9 (index 8) e linha 10 (index 9) como um cabeçalho multinível
+                    df = pd.read_excel(excel_file, sheet_name=nome_aba, header=[8, 9], engine="openpyxl")
+                    
+                    # Achata o cabeçalho duplo em nomes legíveis por strings
+                    df.columns = [f"{str(c[0]).strip().upper()}_{str(c[1]).strip().upper()}" for c in df.columns]
+                    
+                    # Localiza as colunas de controle dinamicamente por texto aproximado nos títulos
+                    col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c), None)
+                    col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
+                    col_unidade = next((c for c in df.columns if "UNIDADE" in c), None)
+
+                    if col_codigo and col_descricao:
+                        for _, linha in df.iterrows():
+                            # Extrai e purifica o código numérico limpando strings e decimais
+                            cod_bruto = str(linha[col_codigo]).strip().split(".")[0] if pd.notna(linha[col_codigo]) else ""
+                            val_codigo = "".join(filter(str.isdigit, cod_bruto))
                             
-                            preco = 0.0
-                            if col_preco and pd.notna(linha[col_preco]):
+                            if val_codigo and val_codigo.isdigit():
+                                desc_val = str(linha[col_descricao]).upper().strip()
+                                unid_val = str(linha[col_unidade]).upper().strip() if col_unidade else "-"
+                                
+                                # Se for uma aba de Composição, salva na tabela de serviços globais
+                                if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
+                                    cursor.execute("""
+                                        INSERT OR IGNORE INTO composicoes (codigo, descricao, unidade)
+                                        VALUES (?, ?, ?)
+                                    """, (val_codigo, desc_val, unid_val))
+                                
+                                # Varre as colunas mescladas de estados procurando por padrões do tipo 'RJ_CUSTO' ou 'RJ_VALOR'
+                                for col_nome in df.columns:
+                                    if "CUSTO" in col_nome or "PREÇO" in col_nome or "PRECO" in col_nome:
+                                        estado_sigla = col_nome.split("_")[0] # Extrai 'RJ', 'SP', 'PR' do título achatado
+                                        if len(estado_sigla) == 2 and estado_sigla.isalpha():
+                                            preco = 0.0
+                                            try:
+                                                if pd.notna(linha[col_nome]):
+                                                    preco = float(linha[col_nome])
+                                            except:
+                                                preco = 0.0
+                                                
+                                            cursor.execute("""
+                                                INSERT INTO insumos (estado, codigo, descricao, unidade, preco_unitario, regime)
+                                                VALUES (?, ?, ?, ?, ?, ?)
+                                            """, (estado_sigla, val_codigo, desc_val, unid_val, preco, regime_aba))
+
+                # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO (COLUNAS B, D, E, F, G DA LINHA 10)
+                elif nome_aba_upper == "ANALÍTICO" or nome_aba_upper == "ANALITICO":
+                    print("ROBÔ SINAPI: Mapeando estrutura de insumos por dentro das composições [Analítico]...")
+                    # Pula as 9 primeiras linhas. Cabeçalho rígido posicionado na linha 10
+                    df_ana = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
+                    
+                    for _, linha in df_ana.iterrows():
+                        if len(linha) >= 7:
+                            # Coluna B (índice 1) = Código da Composição Pai
+                            cod_comp_bruto = str(linha.iloc[1]).strip().split(".")[0] if pd.notna(linha.iloc[1]) else ""
+                            cod_comp = "".join(filter(str.isdigit, cod_comp_bruto))
+                            
+                            # Coluna D (índice 3) = Código do Insumo Filho que vai dentro dela
+                            cod_ins_bruto = str(linha.iloc[3]).strip().split(".")[0] if pd.notna(linha.iloc[3]) else ""
+                            cod_ins = "".join(filter(str.isdigit, cod_ins_bruto))
+                            
+                            if cod_comp.isdigit() and cod_ins.isdigit():
+                                desc_ins = str(linha.iloc[4]).upper().strip() if pd.notna(linha.iloc[4]) else "" # Coluna E
+                                unid_ins = str(linha.iloc[5]).upper().strip() if pd.notna(linha.iloc[5]) else "-" # Coluna F
+                                
+                                coef = 0.0
                                 try:
-                                    preco = float(linha[col_preco])
+                                    if pd.notna(linha.iloc[6]): # Coluna G = Coeficiente
+                                        coef = float(linha.iloc[6])
                                 except:
-                                    preco = 0.0
+                                    coef = 0.0
                                     
-                            cursor.execute("""
-                                INSERT INTO composicoes (estado, codigo, descricao, unidade, preco_unitario, regime)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            """, (estado_registro, val_codigo, desc_val, unid_val, preco, regime_aba))
+                                cursor.execute("""
+                                    INSERT INTO analitico (codigo_composicao, codigo_insumo, descricao_insumo, unidade_insumo, coeficiente)
+                                    VALUES (?, ?, ?, ?, ?)
+                                """, (cod_comp, cod_ins, desc_ins, unid_ins, coef))
             
             conn.commit()
-            print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso usando Mapeamento por Nomes!")
+            print("ROBÔ SINAPI: Sucesso Absoluto! Base Relacional Nacional SQLite populada e higienizada por cabeçalhos duplos!")
         else:
             raise FileNotFoundError()
     except Exception as e:
-        print(f"ROBÔ SINAPI: Erro ao indexar arquivo: {str(e)}")
+        print(f"⚠️ [ERRO CRÍTICO NO LIFESPAN]: Falha na validação ou mapeamento das células: {str(e)}")
     finally:
         conn.close()
     yield
