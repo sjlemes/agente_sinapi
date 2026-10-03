@@ -188,15 +188,16 @@ def calcular_orcamento(request: OrcamentoRequest):
     
     # Busca focada puramente na identificação do código ou da palavra-chave textual
     cursor.execute("""
-        SELECT codigo, descricao, unidade, preco_unitario 
-        FROM composicoes 
-        WHERE (codigo = ? OR descricao LIKE ?) AND estado = ? AND regime = ?
-        LIMIT 25
-    """, (termo_limpo, termo_busca_like, request.estado.upper().strip(), "DESONERADO" if request.desonerado else "NÃO DESONERADO"))
+        SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
+        FROM composicoes c
+        JOIN insumos i ON c.codigo = i.codigo
+        WHERE (c.codigo = ? OR c.descricao LIKE ?) AND i.estado = ? AND i.regime = ?
+        LIMIT 15
+    """, (termo_limpo, termo_busca_like, estado_alvo, regime_texto))
     
     linhas_banco = cursor.fetchall()
     conn.close()
-    
+
     dados_estruturados_reais = []
     if linhas_banco:
         for linha in linhas_banco:
