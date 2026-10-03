@@ -176,17 +176,19 @@ GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1 DE PRODUÇÃO: PROTEGIDA CONTRA INSTABILIDADES DO GOOGLE ---
-# --- 2. SUA ROTA DE CONSULTA DA IA COM BUSCA AMPLA POR APROXIMAÇÃO ---
-# --- 2. SUA ROTA DE CONSULTA DA IA ATUALIZADA (BUSCA AMPLA GLOBAL) ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
     termo_limpo = request.palavras_chave.strip()
     termo_busca_like = f"%{termo_limpo.upper()}%"
     
+    # 🚨 CORREÇÃO DEFINITIVA: Declarando explicitamente a variável que faltava!
+    estado_alvo = request.estado.upper().strip()
+    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Busca focada puramente na identificação do código ou da palavra-chave textual
+    # Faz o cruzamento relacional exato usando as variáveis validadas
     cursor.execute("""
         SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
         FROM composicoes c
