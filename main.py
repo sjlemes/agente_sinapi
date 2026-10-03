@@ -181,21 +181,24 @@ def calcular_orcamento(request: OrcamentoRequest):
     termo_limpo = request.palavras_chave.strip()
     termo_busca_like = f"%{termo_limpo.upper()}%"
     
-    # 🚨 CORREÇÃO DEFINITIVA: Declarando explicitamente a variável que faltava!
-    estado_alvo = request.estado.upper().strip()
-    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    # Prepara o estado e o regime para aceitarem buscas aproximadas por texto
+    estado_busca = f"%{request.estado.upper().strip()}%"
+    regime_busca = f"%{('DESONERADO' if request.desonerado else 'NÃO DESONERADO')}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Faz o cruzamento relacional exato usando as variáveis validadas
+    # 🚨 BUSCA FLEXÍVEL BLINDADA: Troca o '=' rígido por 'LIKE' no Estado e no Regime!
+    # Isso garante que se o banco salvou 'RJ ' ou 'CS_RJ', o Python captura mesmo assim!
     cursor.execute("""
         SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
         FROM composicoes c
         JOIN insumos i ON c.codigo = i.codigo
-        WHERE (c.codigo = ? OR c.descricao LIKE ?) AND i.estado = ? AND i.regime = ?
+        WHERE (c.codigo = ? OR c.descricao LIKE ?) 
+          AND i.estado LIKE ? 
+          AND i.regime LIKE ?
         LIMIT 15
-    """, (termo_limpo, termo_busca_like, estado_alvo, regime_texto))
+    """, (termo_limpo, termo_busca_like, estado_busca, regime_busca))
     
     linhas_banco = cursor.fetchall()
     conn.close()
