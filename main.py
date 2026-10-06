@@ -81,10 +81,11 @@ async def lifespan(app: FastAPI):
                     df = pd.read_excel(
                         nome_arquivo_local, 
                         sheet_name=nome_aba, 
-                        header=[8, 9], # Junta a linha 9 e 10 mescladas
+                        header=[8, 9], # Junta as linhas 9 e 10 mescladas do Excel
                         engine="openpyxl",
-                        read_only=False
+                        engine_kwargs={"data_only": True, "read_only": True} # Envelopado corretamente aqui!
                     )
+
                     
                     # Achata o cabeçalho duplo em nomes lineares
                     df.columns = [f"{str(c[0]).strip().upper()}_{str(c[1]).strip().upper()}" for c in df.columns]
