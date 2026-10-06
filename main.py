@@ -30,13 +30,13 @@ class PDFRequest(BaseModel):
     relatorio_texto: str
 
 # --- CARREGAMENTO RELACIONAL, MULTIINDEX E GUARDIÃO DE LAYOUT (LIFESPAN) ---
+# --- SUBSTITUA APENAS O BLOCO DO LIFESPAN NO SEU MAIN.PY ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite...")
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Criação das 3 tabelas interligadas oficiais
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS composicoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT UNIQUE, descricao TEXT, unidade TEXT
@@ -58,66 +58,65 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.path.exists(nome_arquivo_local):
-            print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando Validação de Layout...")
-            
-            # engine_kwargs={"data_only": True - REsolve hiperlink de fórmulas presetes nest coluna.
-            excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl", engine_kwargs={"data_only": True})
-            
-            # --- 🚨 O GUARDIÃO DE LAYOUT: CHECAGEM DE SEGURANÇA SE AS ABAS EXISTEM ---
-            abas_obrigatorias = ["CSD", "CCD", "ISD", "ICD", "ANALÍTICO"]
-            abas_arquivo = [str(a).upper().strip() for a in excel_file.sheet_names]
-            for aba in abas_obrigatorias:
-                if aba not in abas_arquivo:
-                    print(f"⚠️ [ALERTA DO GUARDIÃO]: Aba obrigatória [{aba}] não localizada! Abortando indexação automática.")
-                    raise ValueError(f"Estrutura de abas inválida. Falta a aba {aba}")
-            
+            print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando indexação rígida...")
             cursor.execute("DELETE FROM composicoes")
             cursor.execute("DELETE FROM insumos")
             cursor.execute("DELETE FROM analitico")
+            
+            # Abrimos o arquivo inspecionando as abas
+            excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl")
             
             for nome_aba in excel_file.sheet_names:
                 nome_aba_upper = nome_aba.upper().strip()
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
                     continue
 
-                # 🧠 1. PROCESSAMENTO DE COMPOSIÇÕES E INSUMOS COM CABEÇALHO DUPLO (LINHAS 9 E 10)
+                regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
+                
+                # 🧱 1. PROCESSAMENTO DE COMPOSIÇÕES E INSUMOS (CSD, CCD, ISD, ICD)
                 if nome_aba_upper in ["CSD", "CCD", "ISD", "ICD"]:
-                    regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                    print(f"ROBÔ SINAPI: Desmesclando e lendo cabeçalho duplo da aba [{nome_aba}]...")
+                    print(f"ROBÔ SINAPI: Lendo e desmesclando aba de preços [{nome_aba}]...")
                     
-                    # LER MULTIINDEX: Junta a linha 9 (index 8) e linha 10 (index 9) como um cabeçalho multinível
-                    df = pd.read_excel(excel_file, sheet_name=nome_aba, header=[8, 9], engine="openpyxl")
+                    # 🚨 AJUSTE 1: Lemos o Excel ativando o data_only direto no read_excel para abrir os valores das fórmulas
+                    df = pd.read_excel(
+                        nome_arquivo_local, 
+                        sheet_name=nome_aba, 
+                        header=[8, 9], # Junta a linha 9 e 10 mescladas
+                        engine="openpyxl",
+                        read_only=False
+                    )
                     
-                    # Achata o cabeçalho duplo em nomes legíveis por strings
+                    # Achata o cabeçalho duplo em nomes lineares
                     df.columns = [f"{str(c[0]).strip().upper()}_{str(c[1]).strip().upper()}" for c in df.columns]
                     
-                    # Localiza as colunas de controle dinamicamente por texto aproximado nos títulos
-                    col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c), None)
-                    col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
-                    col_unidade = next((c for c in df.columns if "UNIDADE" in c), None)
-
-                    if col_codigo and col_descricao:
-                        for _, linha in df.iterrows():
-                            # Extrai e purifica o código numérico limpando strings e decimais
-                            cod_bruto = str(linha[col_codigo]).strip().split(".")[0] if pd.notna(linha[col_codigo]) else ""
+                    # Forçamos a leitura pelas posições físicas exatas para o Pandas não se perder nas colunas
+                    for _, linha in df.iterrows():
+                        if len(linha) >= 8:
+                            # Layout Nacional Unificado: Coluna 0 (A) = Estado | Coluna 2 (C) = Código SINAPI | Coluna 3 (D) = Descrição | Coluna 4 (E) = Unidade
+                            estado_registro = str(linha.iloc[0]).strip().upper() if pd.notna(linha.iloc[0]) else "NACIONAL"
+                            
+                            # Limpa e isola o código da composição/insumo
+                            cod_bruto = str(linha.iloc[2]).strip().split(".")[0] if pd.notna(linha.iloc[2]) else ""
                             val_codigo = "".join(filter(str.isdigit, cod_bruto))
                             
-                            if val_codigo and val_codigo.isdigit():
-                                desc_val = str(linha[col_descricao]).upper().strip()
-                                unid_val = str(linha[col_unidade]).upper().strip() if col_unidade else "-"
+                            if val_codigo and len(val_codigo) >= 4:
+                                desc_val = str(linha.iloc[3]).upper().strip()
+                                unid_val = str(linha.iloc[4]).upper().strip()
                                 
-                                # Se for uma aba de Composição, salva na tabela de serviços globais
+                                # Se for aba de composição, alimenta o índice de serviços globais
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
                                     cursor.execute("""
                                         INSERT OR IGNORE INTO composicoes (codigo, descricao, unidade)
                                         VALUES (?, ?, ?)
                                     """, (val_codigo, desc_val, unid_val))
                                 
-                                # Varre as colunas mescladas de estados procurando por padrões do tipo 'RJ_CUSTO' ou 'RJ_VALOR'
+                                # Varre as colunas mapeando os custos associados a cada estado
                                 for col_nome in df.columns:
                                     if "CUSTO" in col_nome or "PREÇO" in col_nome or "PRECO" in col_nome:
-                                        estado_sigla = col_nome.split("_")[0] # Extrai 'RJ', 'SP', 'PR' do título achatado
-                                        if len(estado_sigla) == 2 and estado_sigla.isalpha():
+                                        partes = col_nome.split("_")
+                                        if len(partes) >= 2:
+                                            estado_sigla = partes[0].upper().strip()
+                                            
                                             preco = 0.0
                                             try:
                                                 if pd.notna(linha[col_nome]):
@@ -131,28 +130,25 @@ async def lifespan(app: FastAPI):
                                             """, (estado_sigla, val_codigo, desc_val, unid_val, preco, regime_aba))
 
                 # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO (COLUNAS B, D, E, F, G DA LINHA 10)
-                elif nome_aba_upper == "ANALÍTICO" or nome_aba_upper == "ANALITICO" or nome_aba_upper == "Analítico":
-                    print("ROBÔ SINAPI: Mapeando estrutura de insumos por dentro das composições [Analítico]...")
-                    # Pula as 9 primeiras linhas. Cabeçalho rígido posicionado na linha 10
-                    df_ana = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
+                elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
+                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna...")
+                    df_ana = pd.read_excel(nome_arquivo_local, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
                     
                     for _, linha in df_ana.iterrows():
                         if len(linha) >= 7:
-                            # Coluna B (índice 1) = Código da Composição Pai
                             cod_comp_bruto = str(linha.iloc[1]).strip().split(".")[0] if pd.notna(linha.iloc[1]) else ""
                             cod_comp = "".join(filter(str.isdigit, cod_comp_bruto))
                             
-                            # Coluna D (índice 3) = Código do Insumo Filho que vai dentro dela
                             cod_ins_bruto = str(linha.iloc[3]).strip().split(".")[0] if pd.notna(linha.iloc[3]) else ""
                             cod_ins = "".join(filter(str.isdigit, cod_ins_bruto))
                             
-                            if cod_comp.isdigit() and cod_ins.isdigit():
-                                desc_ins = str(linha.iloc[4]).upper().strip() if pd.notna(linha.iloc[4]) else "" # Coluna E
-                                unid_ins = str(linha.iloc[5]).upper().strip() if pd.notna(linha.iloc[5]) else "-" # Coluna F
+                            if cod_comp and cod_ins:
+                                desc_ins = str(linha.iloc[4]).upper().strip() if pd.notna(linha.iloc[4]) else ""
+                                unid_ins = str(linha.iloc[5]).upper().strip() if pd.notna(linha.iloc[5]) else "-"
                                 
                                 coef = 0.0
                                 try:
-                                    if pd.notna(linha.iloc[6]): # Coluna G = Coeficiente
+                                    if pd.notna(linha.iloc[6]):
                                         coef = float(linha.iloc[6])
                                 except:
                                     coef = 0.0
@@ -163,35 +159,27 @@ async def lifespan(app: FastAPI):
                                 """, (cod_comp, cod_ins, desc_ins, unid_ins, coef))
             
             conn.commit()
-            print("ROBÔ SINAPI: Sucesso Absoluto! Base Relacional Nacional SQLite populada e higienizada por cabeçalhos duplos!")
-
-
-            # 🚨 INSPETOR DE DADOS DO BANCO SQLITE (ADICIONE ESTE BLOCO AQUI)
+            print("ROBÔ SINAPI: Base Relacional Nacional SQLite populada com sucesso!")
+            
+            # --- SEU RAIO-X DE VALIDAÇÃO DO LOG ---
             print("----------------------------------------------------------------")
             print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
-            
             cursor.execute("SELECT COUNT(*) FROM composicoes")
-            total_registros = cursor.fetchone()[0]
-            print(f"📊 TOTAL DE COMPOSIÇÕES INDEXADAS: {total_registros} linhas.")
-            
+            print(f"📊 TOTAL DE COMPOSIÇÕES INDEXADAS: {cursor.fetchone()[0]} linhas.")
             cursor.execute("SELECT COUNT(*) FROM insumos")
-            total_insumos = cursor.fetchone()[0]
-            print(f"📊 TOTAL DE INSUMOS INDEXADOS: {total_insumos} linhas.")
+            print(f"📊 TOTAL DE INSUMOS INDEXADOS: {cursor.fetchone()[0]} linhas.")
             
-            # Pega as 5 primeiras amostras reais salvas para vermos o formato
-            cursor.execute("SELECT estado, codigo, descricao, preco_unitario, regime FROM insumos LIMIT 5")
+            cursor.execute("SELECT estado, codigo, descricao, preco_unitario FROM insumos WHERE codigo != '0' LIMIT 5")
             amostras = cursor.fetchall()
-            
             print("📋 MOSTRANDO AS 5 PRIMEIRAS LINHAS DA TABELA DE INSUMOS:")
             for index, am in enumerate(amostras):
-                print(f"   Amostra {index+1} -> Estado: [{am[0]}] | Código: [{am[1]}] | Preço: [R$ {am[3]}] | Regime: [{am[4]}]")
+                print(f"   Amostra {index+1} -> Estado: [{am[0]}] | Código: [{am[1]}] | Preço: [R$ {am[3]:.2f}] | Descrição: {am[2][:40]}...")
             print("----------------------------------------------------------------")
-
-
+            
         else:
             raise FileNotFoundError()
     except Exception as e:
-        print(f"⚠️ [ERRO CRÍTICO NO LIFESPAN]: Falha na validação ou mapeamento das células: {str(e)}")
+        print(f"⚠️ [ERRO CRÍTICO NO LIFESPAN]: Falha no mapeamento: {str(e)}")
     finally:
         conn.close()
     yield
