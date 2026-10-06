@@ -59,7 +59,9 @@ async def lifespan(app: FastAPI):
     try:
         if os.path.exists(nome_arquivo_local):
             print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando Validação de Layout...")
-            excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl")
+            
+            # engine_kwargs={"data_only": True - REsolve hiperlink de fórmulas presetes nest coluna.
+            excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl", engine_kwargs={"data_only": True})
             
             # --- 🚨 O GUARDIÃO DE LAYOUT: CHECAGEM DE SEGURANÇA SE AS ABAS EXISTEM ---
             abas_obrigatorias = ["CSD", "CCD", "ISD", "ICD", "ANALÍTICO"]
