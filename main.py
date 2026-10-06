@@ -116,8 +116,14 @@ async def lifespan(app: FastAPI):
                                     if "CUSTO" in col_nome or "PREÇO" in col_nome or "PRECO" in col_nome:
                                         partes = col_nome.split("_")
                                         if len(partes) >= 2:
-                                            estado_sigla = partes[0].upper().strip()
+                                            # Limpa o texto pegando apenas as duas primeiras letras (Ignora frases longas)
+                                            texto_estado = partes.upper().strip()
+                                            estado_sigla = "".join(filter(str.isalpha, texto_estado))[:2]
                                             
+                                            # Se não restou uma sigla válida de estado (2 letras), pula a coluna
+                                            if len(estado_sigla) < 2:
+                                                continue
+                                                
                                             preco = 0.0
                                             try:
                                                 if pd.notna(linha[col_nome]):
@@ -129,6 +135,7 @@ async def lifespan(app: FastAPI):
                                                 INSERT INTO insumos (estado, codigo, descricao, unidade, preco_unitario, regime)
                                                 VALUES (?, ?, ?, ?, ?, ?)
                                             """, (estado_sigla, val_codigo, desc_val, unid_val, preco, regime_aba))
+
 
                 # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO (COLUNAS B, D, E, F, G DA LINHA 10)
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
