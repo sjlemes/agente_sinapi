@@ -116,8 +116,8 @@ async def lifespan(app: FastAPI):
                                     if "CUSTO" in col_nome or "PREÇO" in col_nome or "PRECO" in col_nome:
                                         partes = col_nome.split("_")
                                         if len(partes) >= 2:
-                                            # Limpa o texto pegando apenas as duas primeiras letras (Ignora frases longas)
-                                            texto_estado = partes.upper().strip()
+                                            # CORREÇÃO: Pega o primeiro elemento da lista (partes[0]) antes de aplicar o upper
+                                            texto_estado = partes[0].upper().strip()
                                             estado_sigla = "".join(filter(str.isalpha, texto_estado))[:2]
                                             
                                             # Se não restou uma sigla válida de estado (2 letras), pula a coluna
