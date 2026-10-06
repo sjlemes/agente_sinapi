@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
                                             """, (estado_sigla, val_codigo, desc_val, unid_val, preco, regime_aba))
 
                 # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO (COLUNAS B, D, E, F, G DA LINHA 10)
-                elif nome_aba_upper == "ANALÍTICO" or nome_aba_upper == "ANALITICO":
+                elif nome_aba_upper == "ANALÍTICO" or nome_aba_upper == "ANALITICO" or nome_aba_upper == "Analítico":
                     print("ROBÔ SINAPI: Mapeando estrutura de insumos por dentro das composições [Analítico]...")
                     # Pula as 9 primeiras linhas. Cabeçalho rígido posicionado na linha 10
                     df_ana = pd.read_excel(excel_file, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
@@ -162,6 +162,30 @@ async def lifespan(app: FastAPI):
             
             conn.commit()
             print("ROBÔ SINAPI: Sucesso Absoluto! Base Relacional Nacional SQLite populada e higienizada por cabeçalhos duplos!")
+
+
+            # 🚨 INSPETOR DE DADOS DO BANCO SQLITE (ADICIONE ESTE BLOCO AQUI)
+            print("----------------------------------------------------------------")
+            print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
+            
+            cursor.execute("SELECT COUNT(*) FROM composicoes")
+            total_registros = cursor.fetchone()[0]
+            print(f"📊 TOTAL DE COMPOSIÇÕES INDEXADAS: {total_registros} linhas.")
+            
+            cursor.execute("SELECT COUNT(*) FROM insumos")
+            total_insumos = cursor.fetchone()[0]
+            print(f"📊 TOTAL DE INSUMOS INDEXADOS: {total_insumos} linhas.")
+            
+            # Pega as 5 primeiras amostras reais salvas para vermos o formato
+            cursor.execute("SELECT estado, codigo, descricao, preco_unitario, regime FROM insumos LIMIT 5")
+            amostras = cursor.fetchall()
+            
+            print("📋 MOSTRANDO AS 5 PRIMEIRAS LINHAS DA TABELA DE INSUMOS:")
+            for index, am in enumerate(amostras):
+                print(f"   Amostra {index+1} -> Estado: [{am[0]}] | Código: [{am[1]}] | Preço: [R$ {am[3]}] | Regime: [{am[4]}]")
+            print("----------------------------------------------------------------")
+
+
         else:
             raise FileNotFoundError()
     except Exception as e:
