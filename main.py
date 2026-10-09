@@ -132,21 +132,24 @@ async def lifespan(app: FastAPI):
                     df_ana = pd.read_excel(nome_arquivo_local, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
                     
                     for _, linha in df_ana.iterrows():
-                        if len(linha) >= 7:
-                            cod_comp_bruto = str(linha.iloc[1]).strip().split(".") if pd.notna(linha.iloc[1]) else ""
-                            cod_comp = "".join(filter(str.isdigit, cod_comp_bruto[0]))
+                        # Garante de forma rígida que a linha possui colunas suficientes preenchidas
+                        if len(linha) >= 7 and pd.notna(linha.iloc) and pd.notna(linha.iloc):
+                            cod_comp_bruto = str(linha.iloc).strip().split(".")
+                            # 🚨 TRAVA DE SEGURANÇA: Só limpa se houver texto de verdade na célula
+                            cod_comp = "".join(filter(str.isdigit, cod_comp_bruto)) if cod_comp_bruto else ""
                             
-                            cod_ins_bruto = str(linha.iloc[3]).strip().split(".") if pd.notna(linha.iloc[3]) else ""
-                            cod_ins = "".join(filter(str.isdigit, cod_ins_bruto[0]))
+                            cod_ins_bruto = str(linha.iloc).strip().split(".")
+                            cod_ins = "".join(filter(str.isdigit, cod_ins_bruto)) if cod_ins_bruto else ""
                             
-                            if cod_comp.isdigit() and cod_ins.isdigit():
-                                desc_ins = str(linha.iloc[4]).upper().strip() if pd.notna(linha.iloc[4]) else ""
-                                unid_ins = str(linha.iloc[5]).upper().strip() if pd.notna(linha.iloc[5]) else "-"
+                            # Validação definitiva: garante que ambos os códigos possuem tamanho real do SINAPI
+                            if cod_comp and cod_ins and len(cod_comp) >= 4 and len(cod_ins) >= 4:
+                                desc_ins = str(linha.iloc).upper().strip() if pd.notna(linha.iloc) else ""
+                                unid_ins = str(linha.iloc).upper().strip() if pd.notna(linha.iloc) else "-"
                                 
                                 coef = 0.0
                                 try:
-                                    if pd.notna(linha.iloc[6]):
-                                        coef = float(linha.iloc[6])
+                                    if pd.notna(linha.iloc):
+                                        coef = float(linha.iloc)
                                 except:
                                     coef = 0.0
                                     
