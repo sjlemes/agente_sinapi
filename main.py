@@ -82,12 +82,16 @@ async def lifespan(app: FastAPI):
                     )
                     
                     # Padroniza as colunas duplas achatando o texto
-                    df.columns = [f"{str(c[0]).strip().upper()}_{str(c[1]).strip().upper()}" for c in df.columns]
-                    
+                    df.columns = [f"{str(c).strip().upper()}_{str(c).strip().upper()}" for c in df.columns]
+
                     # Mapeia dinamicamente os cabeçalhos procurando pelas palavras-chave oficiais da Caixa
-                    col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c), None)
-                    col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
-                    col_unidade = next((c for c in df.columns if "UNIDADE" in c), None)
+                    # 🚨 NOVO FILTRO AMPLO: Localiza o código ou a descrição independente do termo usado pela Caixa (Insumo ou Composição)
+                    col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c or "COMPOSIÇÃO" in c or "COMPOSICAO" in c), None)
+                    col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c or "TEXTO" in c), None)
+                    col_unidade = next((c for c in df.columns if "UNIDADE" in c or "UNID" in c), None)
+                    
+                    # Log temporário no terminal do Render para vermos o mapeamento em tempo real por aba
+                    print(f"ROBÔ SINAPI: Aba [{nome_aba}] Mapeada -> Código: [{col_codigo}] | Descrição: [{col_descricao}]")
 
                     if col_codigo and col_descricao:
                         for _, linha in df.iterrows():
