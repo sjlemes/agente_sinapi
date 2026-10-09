@@ -231,24 +231,22 @@ def calcular_orcamento(request: OrcamentoRequest):
     termo_limpo = request.palavras_chave.strip()
     termo_busca_like = f"%{termo_limpo.upper()}%"
     
-    # Prepara o estado e o regime para aceitarem buscas aproximadas por texto
-    estado_busca = f"%{request.estado.upper().strip()}%"
-    regime_busca = f"%{('DESONERADO' if request.desonerado else 'NÃO DESONERADO')}%"
+    estado_alvo = request.estado.upper().strip()
+    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    regime_busca_like = f"%{regime_texto}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # 🚨 BUSCA FLEXÍVEL BLINDADA: Troca o '=' rígido por 'LIKE' no Estado e no Regime!
-    # Isso garante que se o banco salvou 'RJ ' ou 'CS_RJ', o Python captura mesmo assim!
+    # já que os preços foram guardados globalmente. Deixamos a filtragem regional para a inteligência do Gemini!
     cursor.execute("""
         SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
         FROM composicoes c
         JOIN insumos i ON c.codigo = i.codigo
         WHERE (c.codigo = ? OR c.descricao LIKE ?) 
-          AND i.estado LIKE ? 
           AND i.regime LIKE ?
         LIMIT 15
-    """, (termo_limpo, termo_busca_like, estado_busca, regime_busca))
+    """, (termo_limpo, termo_busca_like, regime_busca_like))
     
     linhas_banco = cursor.fetchall()
     conn.close()
