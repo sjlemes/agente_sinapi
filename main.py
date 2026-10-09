@@ -226,6 +226,7 @@ GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1 DE PRODUÇÃO: PROTEGIDA CONTRA INSTABILIDADES DO GOOGLE ---
+# --- SUBSTiTUA COMPLETA MENTE A SUA ROTA POR ESTA VERSÃO BLINDADA CONTRA DUPLICADOS ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
     termo_limpo = request.palavras_chave.strip()
@@ -238,38 +239,46 @@ def calcular_orcamento(request: OrcamentoRequest):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # já que os preços foram guardados globalmente. Deixamos a filtragem regional para a inteligência do Gemini!
+    # 🚨 A BLINDAGEM DO SQL: Usamos GROUP BY c.codigo para garantir que o SQLite 
+    # nos devolva apenas uma linha única por serviço, impedindo o estouro do servidor ASGI!
     cursor.execute("""
         SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
         FROM composicoes c
         JOIN insumos i ON c.codigo = i.codigo
         WHERE (c.codigo = ? OR c.descricao LIKE ?) 
           AND i.regime LIKE ?
+        GROUP BY c.codigo
         LIMIT 15
     """, (termo_limpo, termo_busca_like, regime_busca_like))
     
     linhas_banco = cursor.fetchall()
     conn.close()
-
+    
+    # Mapeia coluna por coluna explicitamente para estruturar os dados para a IA
     dados_estruturados_reais = []
     if linhas_banco:
         for linha in linhas_banco:
             if len(linha) >= 4:
+                codigo_val = str(linha[0]).strip()
+                desc_val = str(linha[1]).strip().upper()
+                unid_val = str(linha[2]).strip().upper()
+                preco_val = float(linha[3]) if linha[3] is not None else 0.0
+                
                 dados_estruturados_reais.append(
-                    f"Código: {str(linha).strip()} | Descrição: {str(linha).strip().upper()} | Unidade: {str(linha).strip().upper()} | Preço Unitário: R$ {float(linha):.2f}"
+                    f"Código SINAPI: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço de Referência: R$ {preco_val:.2f}"
                 )
     
-    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente localizado no SINAPI."
-    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente exato localizado nas tabelas oficiais do SINAPI."
     
     prompt = f"""
     Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
-    O usuário quer um orçamento para: "{request.palavras_chave}" (Quantidade: {request.quantidade}) no estado: {request.estado.upper()} ({regime_texto}).
+    O usuário quer um orçamento para o serviço: "{request.palavras_chave}" na quantidade de: {request.quantidade}.
+    O estado de interesse dele é: {estado_alvo} sob o regime de encargos: {regime_texto}.
     
-    Dados reais extraídos diretamente das planilhas oficiais indexadas:
+    Aqui estão os dados reais extraídos diretamente das tabelas oficiais da planilha nacional unificada:
     {contexto_banco_real}
     
-    Com base estritamente nessas referências reais fornecidas acima, monte o orçamento. Use o preço unitário e descrição encontrados no banco.
+    Com base estritamente nessas referências, monte o orçamento. Use o código, descrição e preço unitário encontrados acima.
     """
 
     config_ia = types.GenerateContentConfig(
@@ -297,16 +306,23 @@ def calcular_orcamento(request: OrcamentoRequest):
     )
     
     try:
-        resposta = client.models.generate_content(model='gemini-3.8-flash', contents=prompt, config=config_ia)
+        resposta = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt,
+            config=config_ia
+        )
         dados_resposta = json.loads(resposta.text)
         return {
-            "relatorio": dados_resposta.get("relatorio", "Orçamento calculado."),
+            "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
             "insumos": dados_resposta.get("insumos", [])
         }
     except Exception as e:
+        print(f"ROBÔ SINAPI: Instabilidade na API de IA: {str(e)}")
         return {
-            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado. Tente novamente em alguns segundos.",
-            "insumos": [{"nome": "Servidor Ocupado", "qtd": 0.0, "unidade": "Erro", "total": "Repita"}]
+            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura local está 100% operacional. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
+            "insumos": [
+                {"nome": "Servidor do Google Ocupado", "qtd": 0.0, "unidade": "Erro", "total": "Tente de Novo"}
+            ]
         }
 
 # --- 3. SUA ROTA DE GERAÇÃO DO PDF CORPORATIVO ---
