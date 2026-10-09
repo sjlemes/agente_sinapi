@@ -169,20 +169,46 @@ async def lifespan(app: FastAPI):
             conn.commit()
             print("ROBÔ SINAPI: Base Relacional Nacional SQLite populada com sucesso!")
             
-            # --- SEU RAIO-X DE VALIDAÇÃO DO LOG ---
+                        # --- SEU NOVO RAIO-X DE VALIDAÇÃO DO LOG AMPLADO ---
             print("----------------------------------------------------------------")
             print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
+            
+            # 1. Checa contagem total de linhas nas 3 tabelas
             cursor.execute("SELECT COUNT(*) FROM composicoes")
             print(f"📊 TOTAL DE COMPOSIÇÕES INDEXADAS: {cursor.fetchone()[0]} linhas.")
+            
             cursor.execute("SELECT COUNT(*) FROM insumos")
             print(f"📊 TOTAL DE INSUMOS INDEXADOS: {cursor.fetchone()[0]} linhas.")
             
-            cursor.execute("SELECT estado, codigo, descricao, preco_unitario FROM insumos WHERE codigo != '0' LIMIT 5")
-            amostras = cursor.fetchall()
-            print("📋 MOSTRANDO AS 5 PRIMEIRAS LINHAS DA TABELA DE INSUMOS:")
-            for index, am in enumerate(amostras):
-                print(f"   Amostra {index+1} -> Estado: [{am[0]}] | Código: [{am[1]}] | Preço: [R$ {am[3]:.2f}] | Descrição: {am[2][:40]}...")
+            cursor.execute("SELECT COUNT(*) FROM analitico")
+            print(f"📊 TOTAL DE LINHAS NO ANALÍTICO: {cursor.fetchone()[0]} linhas.")
+            
+            print("\n📋 MOSTRANDO AS 5 PRIMEIRAS LINHAS DA TABELA DE COMPOSIÇÕES:")
+            cursor.execute("SELECT codigo, descricao, unidade FROM composicoes LIMIT 5")
+            amostras_comp = cursor.fetchall()
+            if amostras_comp:
+                for idx, am in enumerate(amostras_comp):
+                    print(f"   Comp {idx+1} -> Código: [{am[0]}] | Unidade: [{am[2]}] | Descrição: {am[1][:50]}...")
+            else:
+                print("   ⚠️ TABELA DE COMPOSIÇÕES ESTÁ VAZIA!")
+
+            print("\n📋 TESTANDO LOG DE CONSULTA REAL (SIMULAÇÃO DE BUSCA POR 'ALVENARIA'):")
+            # Simula exatamente o JOIN que a rota do celular faz para ver se o banco responde
+            cursor.execute("""
+                SELECT c.codigo, c.descricao, i.estado, i.preco_unitario 
+                FROM composicoes c
+                JOIN insumos i ON c.codigo = i.codigo
+                WHERE c.descricao LIKE '%ALVENARIA%'
+                LIMIT 3
+            """)
+            testes_join = cursor.fetchall()
+            if testes_join:
+                for idx, tj in enumerate(testes_join):
+                    print(f"   Match {idx+1} -> Código: [{tj[0]}] | Estado: [{tj[2]}] | Preço: [R$ {tj[3]:.2f}] | {tj[1][:40]}...")
+            else:
+                print("   ⚠️ O CRUzAMENTO (JOIN) NÃO RETORNOU NENHUM RESULTADO PARA 'ALVENARIA'!")
             print("----------------------------------------------------------------")
+
             
         else:
             raise FileNotFoundError()
