@@ -152,6 +152,48 @@ async def lifespan(app: FastAPI):
             
             conn.commit()
             print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso de forma plana!")
+
+
+
+
+                        # --- COPIE E ENCAIXE ESTE BLOCO DE RAIO-X REVISADO E LEVE ---
+            print("----------------------------------------------------------------")
+            print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
+            
+            cursor.execute("SELECT COUNT(*) FROM composicoes")
+            print(f"📊 TOTAL DE COMPOSIÇÕES INDEXADAS: {cursor.fetchone()[0]} linhas.")
+            
+            cursor.execute("SELECT COUNT(*) FROM insumos")
+            print(f"📊 TOTAL DE INSUMOS INDEXADOS: {cursor.fetchone()[0]} linhas.")
+            
+            cursor.execute("SELECT COUNT(*) FROM analitico")
+            print(f"📊 TOTAL DE LINHAS NO ANALÍTICO: {cursor.fetchone()[0]} linhas.")
+            
+            print("\n📋 MOSTRANDO AS 3 PRIMEIRAS COMPOSIÇÕES SALVAS:")
+            cursor.execute("SELECT codigo, unidade, descricao FROM composicoes LIMIT 3")
+            for idx, am in enumerate(cursor.fetchall()):
+                print(f"   Comp {idx+1} -> Código: [{am[0]}] | Unidade: [{am[1]}] | Descrição: {am[2][:40]}...")
+
+            print("\n📋 TESTANDO LOG DE CONSULTA REAL (SIMULAÇÃO DE BUSCA POR 'ALVENARIA'):")
+            cursor.execute("""
+                SELECT c.codigo, i.preco_unitario, c.descricao 
+                FROM composicoes c
+                JOIN insumos i ON c.codigo = i.codigo
+                WHERE c.descricao LIKE '%ALVENARIA%'
+                LIMIT 2
+            """)
+            testes_join = cursor.fetchall()
+            if testes_join:
+                for idx, tj in enumerate(testes_join):
+                    print(f"   Match {idx+1} -> Código: [{tj[0]}] | Preço: [R$ {tj[1]:.2f}] | {tj[2][:40]}...")
+            else:
+                print("   ⚠️ O CRUZAMENTO (JOIN) NÃO RETORNOU NENHUM RESULTADO PARA 'ALVENARIA'!")
+            print("----------------------------------------------------------------")
+
+
+
+
+
         else:
             raise FileNotFoundError()
     except Exception as e:
