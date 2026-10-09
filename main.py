@@ -30,7 +30,6 @@ class PDFRequest(BaseModel):
     relatorio_texto: str
 
 # --- CARREGAMENTO RELACIONAL, MULTIINDEX E GUARDIÃO DE LAYOUT (LIFESPAN) ---
-# --- SUBSTITUA APENAS O BLOCO DO LIFESPAN NO SEU MAIN.PY ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite...")
@@ -58,12 +57,11 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.path.exists(nome_arquivo_local):
-            print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando indexação rígida...")
+            print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando indexação inteligente...")
             cursor.execute("DELETE FROM composicoes")
             cursor.execute("DELETE FROM insumos")
             cursor.execute("DELETE FROM analitico")
             
-            # Abrimos o arquivo inspecionando as abas
             excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl")
             
             for nome_aba in excel_file.sheet_names:
@@ -71,86 +69,77 @@ async def lifespan(app: FastAPI):
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
                     continue
 
-                regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                
-                # 🧱 1. PROCESSAMENTO DE COMPOSIÇÕES E INSUMOS (CSD, CCD, ISD, ICD)
                 if nome_aba_upper in ["CSD", "CCD", "ISD", "ICD"]:
-                    print(f"ROBÔ SINAPI: Lendo e desmesclando aba de preços [{nome_aba}]...")
+                    regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
+                    print(f"ROBÔ SINAPI: Lendo aba [{nome_aba}] com mapeamento dinâmico...")
                     
-                    # 🚨 AJUSTE 1: Lemos o Excel ativando o data_only direto no read_excel para abrir os valores das fórmulas
                     df = pd.read_excel(
                         nome_arquivo_local, 
                         sheet_name=nome_aba, 
-                        header=[8, 9], # Junta as linhas 9 e 10 mescladas do Excel
+                        header=[8, 9], # Junta linha 9 e 10 mescladas
                         engine="openpyxl",
-                        engine_kwargs={"data_only": True, "read_only": True} # Envelopado corretamente aqui!
+                        engine_kwargs={"data_only": True, "read_only": True}
                     )
-
                     
-                    # Achata o cabeçalho duplo em nomes lineares
+                    # Padroniza as colunas duplas achatando o texto
                     df.columns = [f"{str(c[0]).strip().upper()}_{str(c[1]).strip().upper()}" for c in df.columns]
                     
-                    # Forçamos a leitura pelas posições físicas exatas para o Pandas não se perder nas colunas
-                    for _, linha in df.iterrows():
-                        if len(linha) >= 8:
-                            # Layout Nacional Unificado: Coluna 0 (A) = Estado | Coluna 2 (C) = Código SINAPI | Coluna 3 (D) = Descrição | Coluna 4 (E) = Unidade
-                            estado_registro = str(linha.iloc[0]).strip().upper() if pd.notna(linha.iloc[0]) else "NACIONAL"
+                    # Mapeia dinamicamente os cabeçalhos procurando pelas palavras-chave oficiais da Caixa
+                    col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c), None)
+                    col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
+                    col_unidade = next((c for c in df.columns if "UNIDADE" in c), None)
+
+                    if col_codigo and col_descricao:
+                        for _, linha in df.iterrows():
+                            # Limpa o código removendo decimais residuais
+                            cod_bruto = str(linha[col_codigo]).strip().split(".") if pd.notna(linha[col_codigo]) else ""
+                            val_codigo = "".join(filter(str.isdigit, cod_bruto[0]))
                             
-                            # Limpa e isola o código da composição/insumo
-                            cod_bruto = str(linha.iloc[2]).strip().split(".")[0] if pd.notna(linha.iloc[2]) else ""
-                            val_codigo = "".join(filter(str.isdigit, cod_bruto))
-                            
-                            if val_codigo and len(val_codigo) >= 4:
-                                desc_val = str(linha.iloc[3]).upper().strip()
-                                unid_val = str(linha.iloc[4]).upper().strip()
+                            if val_codigo and val_codigo.isdigit() and len(val_codigo) >= 4:
+                                desc_val = str(linha[col_descricao]).upper().strip()
+                                unid_val = str(linha[col_unidade]).upper().strip() if col_unidade and pd.notna(linha[col_unidade]) else "-"
                                 
-                                # Se for aba de composição, alimenta o índice de serviços globais
+                                # Se for uma aba de Composição (Serviço), popula a tabela de serviços globais
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
                                     cursor.execute("""
                                         INSERT OR IGNORE INTO composicoes (codigo, descricao, unidade)
                                         VALUES (?, ?, ?)
                                     """, (val_codigo, desc_val, unid_val))
                                 
-                                # Varre as colunas mapeando os custos associados a cada estado
+                                # Processa e isola as colunas de preços por Estado
                                 for col_nome in df.columns:
                                     if "CUSTO" in col_nome or "PREÇO" in col_nome or "PRECO" in col_nome:
                                         partes = col_nome.split("_")
                                         if len(partes) >= 2:
-                                            # CORREÇÃO: Pega o primeiro elemento da lista (partes[0]) antes de aplicar o upper
                                             texto_estado = partes[0].upper().strip()
                                             estado_sigla = "".join(filter(str.isalpha, texto_estado))[:2]
                                             
-                                            # Se não restou uma sigla válida de estado (2 letras), pula a coluna
-                                            if len(estado_sigla) < 2:
-                                                continue
-                                                
-                                            preco = 0.0
-                                            try:
-                                                if pd.notna(linha[col_nome]):
-                                                    preco = float(linha[col_nome])
-                                            except:
+                                            if len(estado_sigla) == 2:
                                                 preco = 0.0
-                                                
-                                            cursor.execute("""
-                                                INSERT INTO insumos (estado, codigo, descricao, unidade, preco_unitario, regime)
-                                                VALUES (?, ?, ?, ?, ?, ?)
-                                            """, (estado_sigla, val_codigo, desc_val, unid_val, preco, regime_aba))
+                                                try:
+                                                    if pd.notna(linha[col_nome]):
+                                                        preco = float(linha[col_nome])
+                                                except:
+                                                    preco = 0.0
+                                                        
+                                                cursor.execute("""
+                                                    INSERT INTO insumos (estado, codigo, descricao, unidade, preco_unitario, regime)
+                                                    VALUES (?, ?, ?, ?, ?, ?)
+                                                """, (estado_sigla, val_codigo, desc_val, unid_val, preco, regime_aba))
 
-
-                # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO (COLUNAS B, D, E, F, G DA LINHA 10)
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
-                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna...")
+                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna baseada em colunas fixas da Caixa...")
                     df_ana = pd.read_excel(nome_arquivo_local, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
                     
                     for _, linha in df_ana.iterrows():
                         if len(linha) >= 7:
-                            cod_comp_bruto = str(linha.iloc[1]).strip().split(".")[0] if pd.notna(linha.iloc[1]) else ""
-                            cod_comp = "".join(filter(str.isdigit, cod_comp_bruto))
+                            cod_comp_bruto = str(linha.iloc[1]).strip().split(".") if pd.notna(linha.iloc[1]) else ""
+                            cod_comp = "".join(filter(str.isdigit, cod_comp_bruto[0]))
                             
-                            cod_ins_bruto = str(linha.iloc[3]).strip().split(".")[0] if pd.notna(linha.iloc[3]) else ""
-                            cod_ins = "".join(filter(str.isdigit, cod_ins_bruto))
+                            cod_ins_bruto = str(linha.iloc[3]).strip().split(".") if pd.notna(linha.iloc[3]) else ""
+                            cod_ins = "".join(filter(str.isdigit, cod_ins_bruto[0]))
                             
-                            if cod_comp and cod_ins:
+                            if cod_comp.isdigit() and cod_ins.isdigit():
                                 desc_ins = str(linha.iloc[4]).upper().strip() if pd.notna(linha.iloc[4]) else ""
                                 unid_ins = str(linha.iloc[5]).upper().strip() if pd.notna(linha.iloc[5]) else "-"
                                 
@@ -169,33 +158,23 @@ async def lifespan(app: FastAPI):
             conn.commit()
             print("ROBÔ SINAPI: Base Relacional Nacional SQLite populada com sucesso!")
             
-                        # --- SEU NOVO RAIO-X DE VALIDAÇÃO DO LOG AMPLADO ---
+            # --- SEU NOVO RAIO-X REVISADO E BLINDADO CONTRA CORTES ---
             print("----------------------------------------------------------------")
             print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
-            
-            # 1. Checa contagem total de linhas nas 3 tabelas
             cursor.execute("SELECT COUNT(*) FROM composicoes")
             print(f"📊 TOTAL DE COMPOSIÇÕES INDEXADAS: {cursor.fetchone()[0]} linhas.")
-            
             cursor.execute("SELECT COUNT(*) FROM insumos")
             print(f"📊 TOTAL DE INSUMOS INDEXADOS: {cursor.fetchone()[0]} linhas.")
             
-            cursor.execute("SELECT COUNT(*) FROM analitico")
-            print(f"📊 TOTAL DE LINHAS NO ANALÍTICO: {cursor.fetchone()[0]} linhas.")
-            
             print("\n📋 MOSTRANDO AS 5 PRIMEIRAS LINHAS DA TABELA DE COMPOSIÇÕES:")
-            cursor.execute("SELECT codigo, descricao, unidade FROM composicoes LIMIT 5")
+            cursor.execute("SELECT codigo, unidade, descricao FROM composicoes WHERE codigo IS NOT NULL LIMIT 5")
             amostras_comp = cursor.fetchall()
-            if amostras_comp:
-                for idx, am in enumerate(amostras_comp):
-                    print(f"   Comp {idx+1} -> Código: [{am[0]}] | Unidade: [{am[2]}] | Descrição: {am[1][:50]}...")
-            else:
-                print("   ⚠️ TABELA DE COMPOSIÇÕES ESTÁ VAZIA!")
+            for idx, am in enumerate(amostras_comp):
+                print(f"   Comp {idx+1} -> Código: [{am[0]}] | Unidade: [{am[1]}] | Descrição: {am[2][:50]}...")
 
             print("\n📋 TESTANDO LOG DE CONSULTA REAL (SIMULAÇÃO DE BUSCA POR 'ALVENARIA'):")
-            # Simula exatamente o JOIN que a rota do celular faz para ver se o banco responde
             cursor.execute("""
-                SELECT c.codigo, c.descricao, i.estado, i.preco_unitario 
+                SELECT c.codigo, i.estado, i.preco_unitario, c.descricao 
                 FROM composicoes c
                 JOIN insumos i ON c.codigo = i.codigo
                 WHERE c.descricao LIKE '%ALVENARIA%'
@@ -204,11 +183,10 @@ async def lifespan(app: FastAPI):
             testes_join = cursor.fetchall()
             if testes_join:
                 for idx, tj in enumerate(testes_join):
-                    print(f"   Match {idx+1} -> Código: [{tj[0]}] | Estado: [{tj[2]}] | Preço: [R$ {tj[3]:.2f}] | {tj[1][:40]}...")
+                    print(f"   Match {idx+1} -> Código: [{tj[0]}] | Estado: [{tj[1]}] | Preço: [R$ {tj[2]:.2f}] | {tj[3][:40]}...")
             else:
                 print("   ⚠️ O CRUzAMENTO (JOIN) NÃO RETORNOU NENHUM RESULTADO PARA 'ALVENARIA'!")
             print("----------------------------------------------------------------")
-
             
         else:
             raise FileNotFoundError()
