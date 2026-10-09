@@ -87,40 +87,31 @@ async def lifespan(app: FastAPI):
                     # Mapeamento estrito por posições (Colunas A, B, C, D estruturadas)
                     for _, linha in df.iterrows():
                         if len(linha) >= 4:
-                            # 🚨 MUDANÇA DE ESTRATÉGIA: Validamos se a linha é legítima pela DESCRIÇÃO (Coluna C - Índice 2)
-                            # que contém texto puro e legível, livre de fórmulas e hiperlinks!
-                            desc_bruta = str(linha.iloc).strip().upper() if pd.notna(linha.iloc) else ""
+                            # 🚨 CORREÇÃO: Usamos .values para extrair o texto limpo, livre de objetos internos do Pandas
+                            desc_bruta = str(linha.values[2]).strip().upper() if pd.notna(linha.values[2]) else ""
                             
-                            # Ignora linhas vazias ou cabeçalhos fantasmas que se repetem no rodapé do Excel
                             if desc_bruta and desc_bruta not in ["DESCRIÇÃO", "DESCRIÇÃO DA COMPOSIÇÃO", "NONE", "NAN"]:
-                                unid_val = str(linha.iloc).upper().strip() if pd.notna(linha.iloc) else "-" # Coluna D (Índice 3)
+                                unid_val = str(linha.values[3]).upper().strip() if pd.notna(linha.values[3]) else "-"
+                                celula_codigo = str(linha.values[1]).strip() if pd.notna(linha.values[1]) else ""
                                 
-                                # 🚨 EXTRAÇÃO BLINDADA DO CÓDIGO (COLUNA B - ÍNDICE 1)
-                                celula_codigo = str(linha.iloc).strip() if pd.notna(linha.iloc) else ""
-                                
-                                # Se o Pandas extraiu a fórmula como uma string de hiperlink longa (ex: =HYPERLINK(...; "87528"))
-                                # nós limpamos o texto isolando exclusivamente os caracteres numéricos reais do SINAPI!
                                 val_codigo = "".join(filter(str.isdigit, celula_codigo))
                                 
-                                # Se por causa da fórmula o Pandas leu o código como vazio ou zero, nós criamos um código 
-                                # sequencial temporário amarrado à descrição para habilitar o cruzamento relacional (JOIN)
+                                # Se o hiperlink esconder o código, gera uma chave numérica idêntica estável
                                 if not val_codigo or val_codigo == "0":
-                                    # Usa o hash estável da própria string da descrição para gerar um identificador numérico único
                                     val_codigo = str(abs(hash(desc_bruta)))[:6]
 
-                                # Se for uma aba de Composição (CSD/CCD), popula o índice de serviços com o código e textos legítimos
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
                                     cursor.execute("""
                                         INSERT OR IGNORE INTO composicoes (codigo, descricao, unidade)
                                         VALUES (?, ?, ?)
-                                    """, (val_codigo, desc_val := desc_bruta, unid_val))
+                                    """, (val_codigo, desc_bruta, unid_val))
                                 
-                                # LOOP DE CUSTOS DOS ESTADOS (COLUNA E - ÍNDICE 4 EM DIANTE, PULANDO DE 2 EM 2)
+                                # LOOP DE CUSTOS DOS ESTADOS (Coluna E em diante, pulando de 2 em 2)
                                 for i in range(4, len(linha), 2):
                                     preco = 0.0
                                     try:
-                                        if pd.notna(linha.iloc[i]):
-                                            preco = float(linha.iloc[i])
+                                        if pd.notna(linha.values[i]):
+                                            preco = float(linha.values[i])
                                     except:
                                         preco = 0.0
                                         
@@ -192,11 +183,13 @@ async def lifespan(app: FastAPI):
             
             cursor.execute("SELECT COUNT(*) FROM analitico")
             print(f"📊 TOTAL DE LINHAS NO ANALÍTICO: {cursor.fetchone()[0]} linhas.")
-            
+
             print("\n📋 MOSTRANDO AS 3 PRIMEIRAS COMPOSIÇÕES SALVAS:")
             cursor.execute("SELECT codigo, unidade, descricao FROM composicoes LIMIT 3")
             for idx, am in enumerate(cursor.fetchall()):
+                # Imprime os índices 0 (Código), 1 (Unidade) e 2 (Descrição) da tupla do banco
                 print(f"   Comp {idx+1} -> Código: [{am[0]}] | Unidade: [{am[1]}] | Descrição: {am[2][:40]}...")
+
 
             print("\n📋 TESTANDO LOG DE CONSULTA REAL (SIMULAÇÃO DE BUSCA POR 'ALVENARIA'):")
             cursor.execute("""
