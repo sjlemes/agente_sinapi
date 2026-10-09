@@ -81,15 +81,18 @@ async def lifespan(app: FastAPI):
                         engine_kwargs={"data_only": True, "read_only": True}
                     )
                     
-                    # Padroniza as colunas duplas achatando o texto
-                    df.columns = [f"{str(c).strip().upper()}_{str(c).strip().upper()}" for c in df.columns]
+                    # 1. Achata as colunas em strings puras, limpando quebras de linha (\n) e espaços invisíveis
+                    df.columns = [
+                        str(c).replace("\n", " ").replace("\r", " ").strip().upper() 
+                        for c in df.columns
+                    ]
                     
-                    # 🚨 CORREÇÃO CIRÚRGICA: Busca pelo sufixo final da coluna, ignorando textos decorativos do topo
-                    col_codigo = next((c for c in df.columns if c.endswith("CÓDIGO DA\nCOMPOSIÇÃO") or c.endswith("CÓDIGO DO\nINSUMO") or "CODIGO" in c), None)
-                    col_descricao = next((c for c in df.columns if c.endswith("DESCRIÇÃO") or c.endswith("DESCRIÇÃO DO INSUMO") or "DESCRICAO" in c), None)
+                    # 2. 🚨 O DETECTOR UNIVERSAL: Procura palavras-chave puras em qualquer pedaço do título achatado
+                    col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c), None)
+                    col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
                     col_unidade = next((c for c in df.columns if "UNIDADE" in c or "UNID" in c), None)
                     
-                    print(f"ROBÔ SINAPI: Aba [{nome_aba}] Mapeada de forma precisa -> Código: [{col_codigo}] | Descrição: [{col_descricao}]")
+                    print(f"ROBÔ SINAPI: Aba [{nome_aba}] Mapeada com sucesso -> Código: [{col_codigo}] | Descrição: [{col_descricao}]")
 
                     if col_codigo and col_descricao:
                         for _, linha in df.iterrows():
