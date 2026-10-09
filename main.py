@@ -95,13 +95,22 @@ async def lifespan(app: FastAPI):
 
                     if col_codigo and col_descricao:
                         for _, linha in df.iterrows():
-                            # Limpa o código removendo decimais residuais
-                            cod_bruto = str(linha[col_codigo]).strip().split(".") if pd.notna(linha[col_codigo]) else ""
-                            val_codigo = "".join(filter(str.isdigit, cod_bruto[0]))
+                            # Captura o valor bruto da célula de código de forma segura como texto
+                            celula_bruta = str(linha[col_codigo]).strip() if pd.notna(linha[col_codigo]) else ""
                             
+                            # Remove pontos decimais residuais do Pandas (ex: 87528.0 vira 87528)
+                            if celula_bruta.endswith(".0"):
+                                celula_bruta = celula_bruta[:-2]
+                                
+                            # 🚨 A BLINDAGEM MÁGICA: Extrai estritamente os caracteres numéricos da célula
+                            # Isso destrói qualquer quebra de linha '\n' ou texto residual da Caixa
+                            val_codigo = "".join(filter(str.isdigit, celula_bruta))
+                            
+                            # Se o resultado for um número válido com o tamanho padrão do SINAPI, faz a inserção
                             if val_codigo and val_codigo.isdigit() and len(val_codigo) >= 4:
-                                desc_val = str(linha[col_descricao]).upper().strip()
+                                desc_val = str(linha[col_descricao]).upper().strip() if pd.notna(linha[col_descricao]) else ""
                                 unid_val = str(linha[col_unidade]).upper().strip() if col_unidade and pd.notna(linha[col_unidade]) else "-"
+          
                                 
                                 # Se for uma aba de Composição (Serviço), popula a tabela de serviços globais
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
