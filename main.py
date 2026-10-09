@@ -83,15 +83,17 @@ async def lifespan(app: FastAPI):
                         engine_kwargs={"data_only": True, "read_only": True}
                     )
                     
-                    df.columns = [str(c).replace("\n", " ").strip().upper() for c in df.columns]
+                    # Limpa quebras de linha e espaços nos nomes das colunas da linha 10
+                    df.columns = [str(c).replace("\n", " ").replace("\r", " ").strip().upper() for c in df.columns]
                     
+                    # Ajuste fino de filtros de colunas textuais na linha plana
                     col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c), None)
                     col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
                     col_unidade = next((c for c in df.columns if "UNIDADE" in c or "UNID" in c), None)
 
                     if col_codigo and col_descricao:
                         for _, linha in df.iterrows():
-                            celula_bruta = str(linha[col_codigo]).strip() if pd.notna(linha[col_codigo]) else ""
+                            celula_bruta = str(linha[col_codigo]).strip()
                             if celula_bruta.endswith(".0"):
                                 celula_bruta = celula_bruta[:-2]
                                 
@@ -101,12 +103,14 @@ async def lifespan(app: FastAPI):
                                 desc_val = str(linha[col_descricao]).upper().strip() if pd.notna(linha[col_descricao]) else ""
                                 unid_val = str(linha[col_unidade]).upper().strip() if col_unidade and pd.notna(linha[col_unidade]) else "-"
                                 
+                                # Popula a tabela de composições globais para habilitar o JOIN
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
                                     cursor.execute("""
                                         INSERT OR IGNORE INTO composicoes (codigo, descricao, unidade)
                                         VALUES (?, ?, ?)
                                     """, (val_codigo, desc_val, unid_val))
                                 
+                                # Indexa os preços por coluna associada
                                 for col_nome in df.columns:
                                     if any(k in col_nome for k in ["CUSTO", "PRECO", "PREÇO", "VALOR"]):
                                         preco = 0.0
@@ -121,42 +125,58 @@ async def lifespan(app: FastAPI):
                                             VALUES (?, ?, ?, ?, ?, ?)
                                         """, ("NACIONAL", val_codigo, desc_val, unid_val, preco, regime_aba))
 
-                # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO
+                # 🧱 2. PROCESSAMENTO INTELIGENTE DA ABA ANALÍTICO (BASEADO NOS NOMES REAIS DA LINHA 10)
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
-                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna...")
+                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna de forma plana...")
                     df_ana = pd.read_excel(nome_arquivo_local, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
                     
-                    for _, linha in df_ana.iterrows():
-                        if len(linha) >= 7 and pd.notna(linha.iloc) and pd.notna(linha.iloc):
-                            cod_comp_bruto = str(linha.iloc).strip().split(".")
-                            cod_comp = "".join(filter(str.isdigit, cod_comp_bruto)) if cod_comp_bruto else ""
+                    # Padroniza as colunas da aba analítica
+                    df_ana.columns = [str(c).replace("\n", " ").replace("\r", " ").strip().upper() for c in df_ana.columns]
+                    
+                    # Detecta dinamicamente as colunas B, D, E, F e G pelos nomes da linha 10
+                    col_comp = next((c for c in df_ana.columns if "COMPOSIÇÃO" in c or "COMPOSICAO" in c), None)
+                    col_item = next((c for c in df_ana.columns if "ITEM" in c or "INSUMO" in c or "CÓDIGO" in c), None)
+                    col_desc_item = next((c for c in df_ana.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
+                    col_unid_item = next((c for c in df_ana.columns if "UNIDADE" in c), None)
+                    col_coef = next((c for c in df_ana.columns if "COEFICIENTE" in c or "QUANTIDADE" in c), None)
+                    
+                    if col_comp and col_item:
+                        for _, linha in df_ana.iterrows():
+                            # Limpa e isola o código da composição pai
+                            raw_comp = str(linha[col_comp]).strip()
+                            if raw_comp.endswith(".0"): raw_comp = raw_comp[:-2]
+                            val_comp = "".join(filter(str.isdigit, raw_comp))
                             
-                            cod_ins_bruto = str(linha.iloc).strip().split(".")
-                            cod_ins = "".join(filter(str.isdigit, cod_ins_bruto)) if cod_ins_bruto else ""
+                            # Limpa e isola o código do insumo filho
+                            raw_item = str(linha[col_item]).strip()
+                            if raw_item.endswith(".0"): raw_item = raw_item[:-2]
+                            val_item = "".join(filter(str.isdigit, raw_item))
                             
-                            if cod_comp and cod_ins and len(cod_comp) >= 4 and len(cod_ins) >= 4:
-                                desc_ins = str(linha.iloc).upper().strip() if pd.notna(linha.iloc) else ""
-                                unid_ins = str(linha.iloc).upper().strip() if pd.notna(linha.iloc) else "-"
+                            if val_comp and val_item and len(val_comp) >= 4 and len(val_item) >= 4:
+                                desc_ins = str(linha[col_desc_item]).upper().strip() if col_desc_item and pd.notna(linha[col_desc_item]) else ""
+                                unid_ins = str(linha[col_unid_item]).upper().strip() if col_unid_item and pd.notna(linha[col_unid_item]) else "-"
                                 
                                 coef = 0.0
                                 try:
-                                    if pd.notna(linha.iloc):
-                                        coef = float(linha.iloc)
+                                    if col_coef and pd.notna(linha[col_coef]):
+                                        coef = float(linha[col_coef])
                                 except:
                                     coef = 0.0
                                     
                                 cursor.execute("""
                                     INSERT INTO analitico (codigo_composicao, codigo_insumo, descricao_insumo, unidade_insumo, coeficiente)
                                     VALUES (?, ?, ?, ?, ?)
-                                """, (cod_comp, cod_ins, desc_ins, unid_ins, coef))
+                                """, (val_comp, val_item, desc_ins, unid_ins, coef))
             
             conn.commit()
-            print("ROBÔ SINAPI: Base Nacional SQLite populada com sucesso de forma plana!")
+            print("ROBÔ SINAPI: Base Relacional Nacional SQLite populada com sucesso de forma plana!")
 
 
 
 
-                        # --- COPIE E ENCAIXE ESTE BLOCO DE RAIO-X REVISADO E LEVE ---
+
+
+                       # --- COPIE E ENCAIXE ESTE BLOCO DE RAIO-X REVISADO E LEVE ---
             print("----------------------------------------------------------------")
             print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
             
@@ -189,6 +209,7 @@ async def lifespan(app: FastAPI):
             else:
                 print("   ⚠️ O CRUZAMENTO (JOIN) NÃO RETORNOU NENHUM RESULTADO PARA 'ALVENARIA'!")
             print("----------------------------------------------------------------")
+
 
 
 
