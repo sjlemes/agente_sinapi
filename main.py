@@ -86,28 +86,36 @@ async def lifespan(app: FastAPI):
                     
                     # Mapeamento estrito por posições (Colunas A, B, C, D estruturadas)
                     for _, linha in df.iterrows():
-                        if len(linha) >= 5:
-                            # 🚨 CAPTURA E LIMPEZA DE CÓDIGOS (COLUNA B - ÍNDICE 1)
-                            celula_codigo = str(linha.iloc[1]).strip() if pd.notna(linha.iloc[1]) else ""
-                            if celula_codigo.endswith(".0"):
-                                celula_codigo = celula_codigo[:-2]
-                                
-                            val_codigo = "".join(filter(str.isdigit, celula_codigo))
+                        if len(linha) >= 4:
+                            # 🚨 MUDANÇA DE ESTRATÉGIA: Validamos se a linha é legítima pela DESCRIÇÃO (Coluna C - Índice 2)
+                            # que contém texto puro e legível, livre de fórmulas e hiperlinks!
+                            desc_bruta = str(linha.iloc).strip().upper() if pd.notna(linha.iloc) else ""
                             
-                            # Se encontrou um código válido do SINAPI, extrai a linha
-                            if val_codigo and val_codigo.isdigit() and len(val_codigo) >= 4:
-                                desc_val = str(linha.iloc[2]).upper().strip() if pd.notna(linha.iloc[2]) else "" # Coluna C (Índice 2)
-                                unid_val = str(linha.iloc[3]).upper().strip() if pd.notna(linha.iloc[3]) else "-" # Coluna D (Índice 3)
+                            # Ignora linhas vazias ou cabeçalhos fantasmas que se repetem no rodapé do Excel
+                            if desc_bruta and desc_bruta not in ["DESCRIÇÃO", "DESCRIÇÃO DA COMPOSIÇÃO", "NONE", "NAN"]:
+                                unid_val = str(linha.iloc).upper().strip() if pd.notna(linha.iloc) else "-" # Coluna D (Índice 3)
                                 
-                                # Se for uma aba de Composição (CSD/CCD), popula o índice global de serviços
+                                # 🚨 EXTRAÇÃO BLINDADA DO CÓDIGO (COLUNA B - ÍNDICE 1)
+                                celula_codigo = str(linha.iloc).strip() if pd.notna(linha.iloc) else ""
+                                
+                                # Se o Pandas extraiu a fórmula como uma string de hiperlink longa (ex: =HYPERLINK(...; "87528"))
+                                # nós limpamos o texto isolando exclusivamente os caracteres numéricos reais do SINAPI!
+                                val_codigo = "".join(filter(str.isdigit, celula_codigo))
+                                
+                                # Se por causa da fórmula o Pandas leu o código como vazio ou zero, nós criamos um código 
+                                # sequencial temporário amarrado à descrição para habilitar o cruzamento relacional (JOIN)
+                                if not val_codigo or val_codigo == "0":
+                                    # Usa o hash estável da própria string da descrição para gerar um identificador numérico único
+                                    val_codigo = str(abs(hash(desc_bruta)))[:6]
+
+                                # Se for uma aba de Composição (CSD/CCD), popula o índice de serviços com o código e textos legítimos
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
                                     cursor.execute("""
                                         INSERT OR IGNORE INTO composicoes (codigo, descricao, unidade)
                                         VALUES (?, ?, ?)
-                                    """, (val_codigo, desc_val, unid_val))
+                                    """, (val_codigo, desc_val := desc_bruta, unid_val))
                                 
-                                # 🚨 LOOP DE CUSTOS DOS ESTADOS (COLUNA E - ÍNDICE 4 EM DIANTE, PULANDO DE 2 EM 2)
-                                # Como a linha 10 intercala Custo e %AS, lemos apenas os índices pares a partir de 4
+                                # LOOP DE CUSTOS DOS ESTADOS (COLUNA E - ÍNDICE 4 EM DIANTE, PULANDO DE 2 EM 2)
                                 for i in range(4, len(linha), 2):
                                     preco = 0.0
                                     try:
@@ -116,11 +124,10 @@ async def lifespan(app: FastAPI):
                                     except:
                                         preco = 0.0
                                         
-                                    # Salvamos o preço de forma global associado ao código
                                     cursor.execute("""
                                         INSERT INTO insumos (estado, codigo, descricao, unidade, preco_unitario, regime)
                                         VALUES (?, ?, ?, ?, ?, ?)
-                                    """, ("NACIONAL", val_codigo, desc_val, unid_val, preco, regime_aba))
+                                    """, ("NACIONAL", val_codigo, desc_bruta, unid_val, preco, regime_aba))
 
                 # 🧱 2. PROCESSAMENTO INTELIGENTE DA ABA ANALÍTICO (BASEADO NOS NOMES REAIS DA LINHA 10)
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
