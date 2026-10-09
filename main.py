@@ -70,11 +70,12 @@ async def lifespan(app: FastAPI):
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
                     continue
 
-                # 🧱 1. LEITURA PLANA DE PREÇOS (PULA A LINHA 9 DE AVISOS MESCLADOS)
+                # 🧱 1. LEITURA PLANA POR COORDENADAS FIXAS REAL DA CAIXA
                 if nome_aba_upper in ["CSD", "CCD", "ISD", "ICD"]:
                     regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                    print(f"ROBÔ SINAPI: Lendo aba [{nome_aba}] como tabela simples plana...")
+                    print(f"ROBÔ SINAPI: Devorando aba [{nome_aba}] por coordenadas fixas...")
                     
+                    # skiprows=9 joga o cabeçalho decorativo fora. A linha 10 vira o índice dos dados.
                     df = pd.read_excel(
                         nome_arquivo_local, 
                         sheet_name=nome_aba, 
@@ -83,47 +84,43 @@ async def lifespan(app: FastAPI):
                         engine_kwargs={"data_only": True, "read_only": True}
                     )
                     
-                    # Limpa quebras de linha e espaços nos nomes das colunas da linha 10
-                    df.columns = [str(c).replace("\n", " ").replace("\r", " ").strip().upper() for c in df.columns]
-                    
-                    # Ajuste fino de filtros de colunas textuais na linha plana
-                    col_codigo = next((c for c in df.columns if "CÓDIGO" in c or "CODIGO" in c), None)
-                    col_descricao = next((c for c in df.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
-                    col_unidade = next((c for c in df.columns if "UNIDADE" in c or "UNID" in c), None)
-
-                    if col_codigo and col_descricao:
-                        for _, linha in df.iterrows():
-                            celula_bruta = str(linha[col_codigo]).strip()
-                            if celula_bruta.endswith(".0"):
-                                celula_bruta = celula_bruta[:-2]
+                    # Mapeamento estrito por posições (Colunas A, B, C, D estruturadas)
+                    for _, linha in df.iterrows():
+                        if len(linha) >= 5:
+                            # 🚨 CAPTURA E LIMPEZA DE CÓDIGOS (COLUNA B - ÍNDICE 1)
+                            celula_codigo = str(linha.iloc[1]).strip() if pd.notna(linha.iloc[1]) else ""
+                            if celula_codigo.endswith(".0"):
+                                celula_codigo = celula_codigo[:-2]
                                 
-                            val_codigo = "".join(filter(str.isdigit, celula_bruta))
+                            val_codigo = "".join(filter(str.isdigit, celula_codigo))
                             
+                            # Se encontrou um código válido do SINAPI, extrai a linha
                             if val_codigo and val_codigo.isdigit() and len(val_codigo) >= 4:
-                                desc_val = str(linha[col_descricao]).upper().strip() if pd.notna(linha[col_descricao]) else ""
-                                unid_val = str(linha[col_unidade]).upper().strip() if col_unidade and pd.notna(linha[col_unidade]) else "-"
+                                desc_val = str(linha.iloc[2]).upper().strip() if pd.notna(linha.iloc[2]) else "" # Coluna C (Índice 2)
+                                unid_val = str(linha.iloc[3]).upper().strip() if pd.notna(linha.iloc[3]) else "-" # Coluna D (Índice 3)
                                 
-                                # Popula a tabela de composições globais para habilitar o JOIN
+                                # Se for uma aba de Composição (CSD/CCD), popula o índice global de serviços
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
                                     cursor.execute("""
                                         INSERT OR IGNORE INTO composicoes (codigo, descricao, unidade)
                                         VALUES (?, ?, ?)
                                     """, (val_codigo, desc_val, unid_val))
                                 
-                                # Indexa os preços por coluna associada
-                                for col_nome in df.columns:
-                                    if any(k in col_nome for k in ["CUSTO", "PRECO", "PREÇO", "VALOR"]):
+                                # 🚨 LOOP DE CUSTOS DOS ESTADOS (COLUNA E - ÍNDICE 4 EM DIANTE, PULANDO DE 2 EM 2)
+                                # Como a linha 10 intercala Custo e %AS, lemos apenas os índices pares a partir de 4
+                                for i in range(4, len(linha), 2):
+                                    preco = 0.0
+                                    try:
+                                        if pd.notna(linha.iloc[i]):
+                                            preco = float(linha.iloc[i])
+                                    except:
                                         preco = 0.0
-                                        try:
-                                            if pd.notna(linha[col_nome]):
-                                                preco = float(linha[col_nome])
-                                        except:
-                                            preco = 0.0
                                         
-                                        cursor.execute("""
-                                            INSERT INTO insumos (estado, codigo, descricao, unidade, preco_unitario, regime)
-                                            VALUES (?, ?, ?, ?, ?, ?)
-                                        """, ("NACIONAL", val_codigo, desc_val, unid_val, preco, regime_aba))
+                                    # Salvamos o preço de forma global associado ao código
+                                    cursor.execute("""
+                                        INSERT INTO insumos (estado, codigo, descricao, unidade, preco_unitario, regime)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                    """, ("NACIONAL", val_codigo, desc_val, unid_val, preco, regime_aba))
 
                 # 🧱 2. PROCESSAMENTO INTELIGENTE DA ABA ANALÍTICO (BASEADO NOS NOMES REAIS DA LINHA 10)
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
