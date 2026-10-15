@@ -230,7 +230,7 @@ client = genai.Client(api_key=GOOGLE_API_KEY)
 def calcular_orcamento(request: OrcamentoRequest):
     termo_bruto = request.palavras_chave.strip()
     
-    # 🚨 MELHORIA 1: Quebra o texto em palavras individuais para busca fragmentada
+    # Quebra o texto digitado pelo celular em palavras limpas
     palavras = [p.upper().strip() for p in termo_bruto.split() if p.strip()]
     
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
@@ -239,7 +239,7 @@ def calcular_orcamento(request: OrcamentoRequest):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Se o usuário digitou apenas um código numérico exato ou nenhuma palavra
+    # 🚨 CORREÇÃO DEFINITIVA: Usamos Listas convencionais [] em vez de Tuplas para blindar o SQLite
     if termo_bruto.isdigit() or not palavras:
         sql = """
             SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
@@ -248,9 +248,9 @@ def calcular_orcamento(request: OrcamentoRequest):
             WHERE (c.codigo = ? OR c.descricao LIKE ?) AND i.regime LIKE ?
             GROUP BY c.codigo LIMIT 15
         """
-        parametros = (termo_bruto, f"%{termo_bruto}%", regime_busca_like)
+        parametros = [termo_bruto, f"%{termo_bruto}%", regime_busca_like]
     else:
-        # Monta as cláusulas LIKE dinamicamente baseadas na quantidade de palavras digitadas
+        # Monta um filtro 'LIKE' dinâmico para cada palavra (Ex: c.descricao LIKE ? AND c.descricao LIKE ?)
         condicoes_likes = " AND ".join(["c.descricao LIKE ?" for _ in palavras])
         
         sql = f"""
@@ -260,9 +260,11 @@ def calcular_orcamento(request: OrcamentoRequest):
             WHERE ({condicoes_likes}) AND i.regime LIKE ?
             GROUP BY c.codigo LIMIT 15
         """
-        # Prepara a tupla de parâmetros injetando o símbolo '%' em cada palavra
-        parametros = tuple(f"%{p}%" for p in palavras) + (regime_busca_like,)
+        # Cria a lista injetando as palavras intercaladas e fecha com o regime
+        parametros = [f"%{p}%" for p in palavras]
+        parametros.append(regime_busca_like)
         
+    # Executa a busca passando a lista blindada de parâmetros
     cursor.execute(sql, parametros)
     linhas_banco = cursor.fetchall()
     conn.close()
