@@ -225,35 +225,48 @@ app = FastAPI(lifespan=lifespan)
 GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# --- ROTA 1 DE PRODUÇÃO: PROTEGIDA CONTRA INSTABILIDADES DO GOOGLE ---
-# --- SUBSTiTUA COMPLETA MENTE A SUA ROTA POR ESTA VERSÃO BLINDADA CONTRA DUPLICADOS ---
+# --- ROTA 1 DE PRODUÇÃO: PRINCIPAL ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
-    termo_limpo = request.palavras_chave.strip()
-    termo_busca_like = f"%{termo_limpo.upper()}%"
+    termo_bruto = request.palavras_chave.strip()
     
-    estado_alvo = request.estado.upper().strip()
+    # 🚨 MELHORIA 1: Quebra o texto em palavras individuais para busca fragmentada
+    palavras = [p.upper().strip() for p in termo_bruto.split() if p.strip()]
+    
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     regime_busca_like = f"%{regime_texto}%"
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # 🚨 A BLINDAGEM DO SQL: Usamos GROUP BY c.codigo para garantir que o SQLite 
-    # nos devolva apenas uma linha única por serviço, impedindo o estouro do servidor ASGI!
-    cursor.execute("""
-        SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
-        FROM composicoes c
-        JOIN insumos i ON c.codigo = i.codigo
-        WHERE (c.codigo = ? OR c.descricao LIKE ?) 
-          AND i.regime LIKE ?
-        GROUP BY c.codigo
-        LIMIT 15
-    """, (termo_limpo, termo_busca_like, regime_busca_like))
-    
+    # Se o usuário digitou apenas um código numérico exato ou nenhuma palavra
+    if termo_bruto.isdigit() or not palavras:
+        sql = """
+            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
+            FROM composicoes c
+            JOIN insumos i ON c.codigo = i.codigo
+            WHERE (c.codigo = ? OR c.descricao LIKE ?) AND i.regime LIKE ?
+            GROUP BY c.codigo LIMIT 15
+        """
+        parametros = (termo_bruto, f"%{termo_bruto}%", regime_busca_like)
+    else:
+        # Monta as cláusulas LIKE dinamicamente baseadas na quantidade de palavras digitadas
+        condicoes_likes = " AND ".join(["c.descricao LIKE ?" for _ in palavras])
+        
+        sql = f"""
+            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
+            FROM composicoes c
+            JOIN insumos i ON c.codigo = i.codigo
+            WHERE ({condicoes_likes}) AND i.regime LIKE ?
+            GROUP BY c.codigo LIMIT 15
+        """
+        # Prepara a tupla de parâmetros injetando o símbolo '%' em cada palavra
+        parametros = tuple(f"%{p}%" for p in palavras) + (regime_busca_like,)
+        
+    cursor.execute(sql, parametros)
     linhas_banco = cursor.fetchall()
     conn.close()
-    
+
     # Mapeia coluna por coluna explicitamente para estruturar os dados para a IA
     dados_estruturados_reais = []
     if linhas_banco:
@@ -325,7 +338,7 @@ def calcular_orcamento(request: OrcamentoRequest):
             ]
         }
 
-# --- 3. SUA ROTA DE GERAÇÃO DO PDF CORPORATIVO ---
+# --- ROTA 2: GERAÇÃO DO PDF CORPORATIVO ---
 @app.post("/gerar-pdf-orcamento")
 async def gerar_pdf_orcamento(request: PDFRequest):
     buffer = io.BytesIO()
