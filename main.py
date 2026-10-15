@@ -30,7 +30,6 @@ class PDFRequest(BaseModel):
     relatorio_texto: str
 
 # --- CARREGAMENTO RELACIONAL, MULTIINDEX E GUARDIÃO DE LAYOUT (LIFESPAN) ---
-# --- COPIE E SUBSTITUA APENAS O BLOCO DO LIFESPAN NO SEU MAIN.PY ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite definitivo...")
@@ -230,16 +229,18 @@ client = genai.Client(api_key=GOOGLE_API_KEY)
 def calcular_orcamento(request: OrcamentoRequest):
     termo_bruto = request.palavras_chave.strip()
     
-    # Quebra o texto digitado pelo celular em palavras limpas
-    palavras = [p.upper().strip() for p in termo_bruto.split() if p.strip()]
-    
+    # 🚨 DECLARAÇÃO DAS VARIÁVEIS CRUCIAIS DE ESCOPO (ZERA O NAMEERROR)
+    estado_alvo = request.estado.upper().strip()
     regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
     regime_busca_like = f"%{regime_texto}%"
+    
+    # Quebra o texto digitado pelo celular em palavras limpas
+    palavras = [p.upper().strip() for p in termo_bruto.split() if p.strip()]
     
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # 🚨 CORREÇÃO DEFINITIVA: Usamos Listas convencionais [] em vez de Tuplas para blindar o SQLite
+    # Montagem da busca usando Listas estáveis []
     if termo_bruto.isdigit() or not palavras:
         sql = """
             SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
@@ -250,7 +251,7 @@ def calcular_orcamento(request: OrcamentoRequest):
         """
         parametros = [termo_bruto, f"%{termo_bruto}%", regime_busca_like]
     else:
-        # Monta um filtro 'LIKE' dinâmico para cada palavra (Ex: c.descricao LIKE ? AND c.descricao LIKE ?)
+        # Monta um filtro 'LIKE' dinâmico para cada palavra isolada
         condicoes_likes = " AND ".join(["c.descricao LIKE ?" for _ in palavras])
         
         sql = f"""
@@ -260,15 +261,13 @@ def calcular_orcamento(request: OrcamentoRequest):
             WHERE ({condicoes_likes}) AND i.regime LIKE ?
             GROUP BY c.codigo LIMIT 15
         """
-        # Cria a lista injetando as palavras intercaladas e fecha com o regime
         parametros = [f"%{p}%" for p in palavras]
         parametros.append(regime_busca_like)
         
-    # Executa a busca passando a lista blindada de parâmetros
     cursor.execute(sql, parametros)
     linhas_banco = cursor.fetchall()
     conn.close()
-
+    
     # Mapeia coluna por coluna explicitamente para estruturar os dados para a IA
     dados_estruturados_reais = []
     if linhas_banco:
