@@ -4,10 +4,12 @@ import json
 import sqlite3
 import pandas as pd
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, responses
+from fastapi import FastAPI, responses, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
+from typing import List, Optional
 
 # Ferramentas para gerar o PDF
 from reportlab.lib.pagesizes import letter
@@ -15,12 +17,12 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- MODELOS DE DADOS ---
+# Definição do modelo de entrada vindo do Ktor/Android
 class OrcamentoRequest(BaseModel):
     estado: str
     palavras_chave: str
     quantidade: float
-    desonerado: bool
+    desonerado: bool    
 
 class PDFRequest(BaseModel):
     estado: str
@@ -165,12 +167,7 @@ async def lifespan(app: FastAPI):
             conn.commit()
             print("ROBÔ SINAPI: Base Relacional Nacional SQLite populada com sucesso de forma plana!")
 
-
-
-
-
-
-                       # --- COPIE E ENCAIXE ESTE BLOCO DE RAIO-X REVISADO E LEVE ---
+            # --- CHECANDO SE PLANILHA FOI DEPURADA E SQLITE POPULADO---
             print("----------------------------------------------------------------")
             print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
             
@@ -206,11 +203,6 @@ async def lifespan(app: FastAPI):
                 print("   ⚠️ O CRUZAMENTO (JOIN) NÃO RETORNOU NENHUM RESULTADO PARA 'ALVENARIA'!")
             print("----------------------------------------------------------------")
 
-
-
-
-
-
         else:
             raise FileNotFoundError()
     except Exception as e:
@@ -224,7 +216,7 @@ app = FastAPI(lifespan=lifespan)
 GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# --- ROTA 1 DE PRODUÇÃO: PRINCIPAL ---
+# --- ROTA 1 DE PRODUÇÃO: PRINCIPAL (VERSÃO HIERÁRQUICA EM ÁRVORE) ---
 @app.post("/calcular-orcamento")
 def calcular_orcamento(request: OrcamentoRequest):
     termo_bruto = request.palavras_chave.strip()
@@ -240,7 +232,7 @@ def calcular_orcamento(request: OrcamentoRequest):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Montagem da busca usando Listas estáveis []
+    # Montagem da busca usando Listas estáveis [] (SUA LÓGICA ORIGINAL PRESERVADA)
     if termo_bruto.isdigit() or not palavras:
         sql = """
             SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
@@ -271,12 +263,12 @@ def calcular_orcamento(request: OrcamentoRequest):
     # Mapeia coluna por coluna explicitamente para estruturar os dados para a IA
     dados_estruturados_reais = []
     if linhas_banco:
-        for linha in linhas_banco:
-            if len(linha) >= 4:
-                codigo_val = str(linha[0]).strip()
-                desc_val = str(linha[1]).strip().upper()
-                unid_val = str(linha[2]).strip().upper()
-                preco_val = float(linha[3]) if linha[3] is not None else 0.0
+        for static_linha in linhas_banco:
+            if len(static_linha) >= 4:
+                codigo_val = str(static_linha[0]).strip()
+                desc_val = str(static_linha[1]).strip().upper()
+                unid_val = str(static_linha[2]).strip().upper()
+                preco_val = float(static_linha[3]) if static_linha[3] is not None else 0.0
                 
                 dados_estruturados_reais.append(
                     f"Código SINAPI: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço de Referência: R$ {preco_val:.2f}"
@@ -292,30 +284,44 @@ def calcular_orcamento(request: OrcamentoRequest):
     Aqui estão os dados reais extraídos diretamente das tabelas oficiais da planilha nacional unificada:
     {contexto_banco_real}
     
-    Com base estritamente nessas referências, monte o orçamento. Use o código, descrição e preço unitário encontrados acima.
+    Com base estritamente nessas referências, monte o orçamento estruturado em composições e seus respectivos insumos e materiais. Use o código, descrição e preço unitário encontrados acima.
     """
 
+    # 🛠️ NOVO ESQUEMA RECONFIGURADO EM ÁRVORE HIERÁRQUICA PARA O JETPACK COMPOSE
     config_ia = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema={
             "type": "OBJECT",
             "properties": {
                 "relatorio": {"type": "STRING"},
-                "insumos": {
+                "composicoes": {
                     "type": "ARRAY",
                     "items": {
                         "type": "OBJECT",
                         "properties": {
-                            "nome": {"type": "STRING"},
-                            "qtd": {"type": "NUMBER"},
+                            "codigo": {"type": "STRING"},
+                            "descricao": {"type": "STRING"},
                             "unidade": {"type": "STRING"},
-                            "total": {"type": "STRING"}
+                            "total": {"type": "STRING"},
+                            "insumos": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "nome": {"type": "STRING"},
+                                        "qtd": {"type": "NUMBER"},
+                                        "unidade": {"type": "STRING"},
+                                        "total": {"type": "STRING"}
+                                    },
+                                    "required": ["nome", "qtd", "unidade", "total"]
+                                }
+                            }
                         },
-                        "required": ["nome", "qtd", "unidade", "total"]
+                        "required": ["codigo", "descricao", "unidade", "total", "insumos"]
                     }
                 }
             },
-            "required": ["relatorio", "insumos"]
+            "required": ["relatorio", "composicoes"]
         }
     )
     
@@ -328,14 +334,21 @@ def calcular_orcamento(request: OrcamentoRequest):
         dados_resposta = json.loads(resposta.text)
         return {
             "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
-            "insumos": dados_resposta.get("insumos", [])
+            "composicoes": dados_resposta.get("composicoes", [])
         }
     except Exception as e:
         print(f"ROBÔ SINAPI: Instabilidade na API de IA: {str(e)}")
+        # Tratamento de erro original preservado e adaptado para a nova estrutura de árvore
         return {
             "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura local está 100% operacional. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
-            "insumos": [
-                {"nome": "Servidor do Google Ocupado", "qtd": 0.0, "unidade": "Erro", "total": "Tente de Novo"}
+            "composicoes": [
+                {
+                    "codigo": "ERRO",
+                    "descricao": "Servidor do Google Ocupado",
+                    "unidade": "Erro",
+                    "total": "Tente de Novo",
+                    "insumos": []
+                }
             ]
         }
 
