@@ -6,16 +6,15 @@ import pandas as pd
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, responses, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from typing import List, Optional
 
-# Ferramentas para gerar o PDF
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
+# Ferramentas para gerar planilha Excel
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # Definição do modelo de entrada vindo do Ktor/Android
 class OrcamentoRequest(BaseModel):
@@ -352,28 +351,184 @@ def calcular_orcamento(request: OrcamentoRequest):
             ]
         }
 
-# --- ROTA 2: GERAÇÃO DO PDF CORPORATIVO ---
-@app.post("/gerar-pdf-orcamento")
-async def gerar_pdf_orcamento(request: PDFRequest):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
-    styles = getSampleStyleSheet()
-    elementos = []
+# --- NOVA ROTA 2: EXPORTAÇÃO EXCEL DA COMPOSIÇÃO CONSULTADA ---
+@app.post("/exportar-excel")
+def exportar_excel(request: OrcamentoRequest):
+    termo_bruto = request.palavras_chave.strip()
+    estado_alvo = request.estado.upper().strip()
+    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    regime_busca_like = f"%{regime_texto}%"
+    palavras = [p.upper().strip() for p in termo_bruto.split() if p.strip()]
     
-    estilo_titulo = ParagraphStyle('TituloPDF', parent=styles['Heading1'], fontSize=22, textColor=colors.HexColor('#1A365D'), spaceAfter=15)
-    elementos.append(Paragraph("Relatório de Custos e Composições SINAPI", estilo_titulo))
-    elementos.append(Spacer(1, 10))
+    # 1. EXECUTA A MESMA BUSCA SQL QUE VOCÊ JÁ HOMOLOGOU
+    conn = sqlite3.connect("sinapi.db")
+    cursor = conn.cursor()
     
-    regime = "Desonerado" if request.desonerado else "Não Desonerado"
-    estilo_corpo = styles['Normal']
-    elementos.append(Paragraph(f"<b>Estado:</b> {request.estado} | <b>Regime:</b> {regime}", estilo_corpo))
-    elementos.append(Paragraph(f"<b>Busca:</b> {request.palavras_chave} (Quantidade: {request.quantidade})", estilo_corpo))
-    elementos.append(Spacer(1, 15))
+    if termo_bruto.isdigit() or not palavras:
+        sql = """
+            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
+            FROM composicoes c
+            JOIN insumos i ON c.codigo = i.codigo
+            WHERE (c.codigo = ? OR c.descricao LIKE ?) AND i.regime LIKE ?
+            GROUP BY c.codigo LIMIT 15
+        """
+        parametros = [termo_bruto, f"%{termo_bruto}%", regime_busca_like]
+    else:
+        condicoes_likes = " AND ".join(["c.descricao LIKE ?" for _ in palavras])
+        sql = f"""
+            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
+            FROM composicoes c
+            JOIN insumos i ON c.codigo = i.codigo
+            WHERE ({condicoes_likes}) AND i.regime LIKE ?
+            GROUP BY c.codigo LIMIT 15
+        """
+        parametros = [f"%{p}%" for p in palavras]
+        parametros.append(regime_busca_like)
+        
+    cursor.execute(sql, parametros)
+    linhas_banco = cursor.fetchall()
     
-    elementos.append(Paragraph("<b>Detalhamento Completo do Orçamento:</b>", styles['Heading3']))
-    elementos.append(Spacer(1, 5))
-    elementos.append(Paragraph(request.relatorio_texto.replace("\n", "<br/>"), estilo_corpo))
+    if not linhas_banco:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Nenhum dado encontrado para exportar.")
+
+    # 2. SE DETECTOU DADOS, BUSCA OS FILHOS (ANALÍTICO) DA PRIMEIRA COMPOSIÇÃO ENCONTRADA
+    # Para o Excel solto, vamos detalhar analiticamente a primeira composição que casou com a busca
+    primeira_comp = linhas_banco[0]
+    codigo_comp = str(primeira_comp[0]).strip()
+    desc_comp = str(primeira_comp[1]).strip().upper()
+    unid_comp = str(primeira_comp[2]).strip().upper()
     
-    doc.build(elementos)
-    buffer.seek(0)
-    return responses.StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=orcamento_sinapi.pdf"})
+    query_insumos = """
+        SELECT i.descricao, a.coeficiente, i.unidade, i.preco_unitario
+        FROM analitico a
+        JOIN insumos i ON a.codigo_insumo = i.codigo
+        WHERE a.codigo_composicao = ? AND i.regime LIKE ?
+    """
+    cursor.execute(query_insumos, (codigo_comp, regime_busca_like))
+    linhas_insumos = cursor.fetchall()
+    conn.close()
+
+    # 3. CONSTRUÇÃO DA PLANILHA EXCEL INTELIGENTE COM OPENPYXL
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Orçamento SINAPI"
+    
+    # Ativa as linhas de grade para visualização no Excel
+    ws.views.sheetView[0].showGridLines = True
+    
+    # Estilizações Elegantes (Padrão Engenharia)
+    fonte_titulo = Font(name="Arial", size=14, bold=True, color="FFFFFF")
+    fonte_cabecalho = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    fonte_normal = Font(name="Arial", size=10)
+    fonte_bold = Font(name="Arial", size=10, bold=True)
+    
+    fill_azul_escuro = PatternFill(start_color="0D47A1", end_color="0D47A1", fill_type="solid")
+    fill_cinza_claro = PatternFill(start_color="F1F3F5", end_color="F1F3F5", fill_type="solid")
+    
+    borda_fina = Border(
+        left=Side(style='thin', color='E0E0E0'),
+        right=Side(style='thin', color='E0E0E0'),
+        top=Side(style='thin', color='E0E0E0'),
+        bottom=Side(style='thin', color='E0E0E0')
+    )
+
+    # Título do Relatório
+    ws.merge_cells("A1:E1")
+    ws["A1"] = f"RELATÓRIO DE CUSTOS SINAPI - {estado_alvo} ({regime_texto})"
+    ws["A1"].font = fonte_titulo
+    ws["A1"].fill = fill_azul_escuro
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 40
+
+    # Informações da Composição Mãe
+    ws["A3"] = "Composição Principal:"
+    ws["A3"].font = fonte_bold
+    ws["B3"] = f"{codigo_comp} - {desc_comp}"
+    ws["B3"].font = fonte_normal
+    
+    ws["A4"] = "Quantidade Pedida:"
+    ws["A4"].font = fonte_bold
+    ws["B4"] = request.quantidade
+    ws["B4"].font = fonte_normal
+    ws["C4"] = unid_comp
+    ws["C4"].font = fonte_normal
+
+    # Cabeçalho da Tabela de Materiais
+    cabecalhos = ["Cód/Descrição Insumo", "Unidade", "Coeficiente", "Preço Unitário (R$)", "Total Calculado (R$)"]
+    for col_num, text in enumerate(cabecalhos, 1):
+        cell = ws.cell(row=6, column=col_num)
+        cell.value = text
+        cell.font = fonte_cabecalho
+        cell.fill = fill_azul_escuro
+        cell.alignment = Alignment(horizontal="center" if col_num in [2,3] else "left" if col_num==1 else "right")
+    ws.row_dimensions[6].height = 25
+
+    # Corpo da Tabela (Insumos Filhos)
+    linha_atual = 7
+    soma_total_geral = 0.0
+    
+    for idx, ins in enumerate(linhas_insumos, 1):
+        desc_ins = str(ins[0]).strip().upper()
+        coef = float(ins[1]) if ins[1] else 0.0
+        unid_ins = str(ins[2]).strip().upper()
+        preco_u = float(ins[3]) if ins[3] else 0.0
+        
+        qtd_total_insumo = request.quantidade * coef
+        custo_total_insumo = qtd_total_insumo * preco_u
+        soma_total_geral += custo_total_insumo
+
+        # Inserção das células
+        c1 = ws.cell(row=linha_atual, column=1, value=desc_ins)
+        c2 = ws.cell(row=linha_atual, column=2, value=unid_ins)
+        c3 = ws.cell(row=linha_atual, column=3, value=coef)
+        c4 = ws.cell(row=linha_atual, column=4, value=preco_u)
+        c5 = ws.cell(row=linha_atual, column=5, value=custo_total_insumo)
+
+        # Formatações Numéricas e Alinhamentos
+        c1.alignment = Alignment(horizontal="left")
+        c2.alignment = Alignment(horizontal="center")
+        c3.alignment = Alignment(horizontal="right")
+        c4.alignment = Alignment(horizontal="right")
+        c5.alignment = Alignment(horizontal="right")
+        
+        # Máscara de Moeda do Excel nativa (facilita somas posteriores pelo usuário)
+        c4.number_format = '"R$"#,##0.00'
+        c5.number_format = '"R$"#,##0.00'
+        c3.number_format = '#,##0.000'
+
+        # Aplica fontes e bordas
+        for c in [c1, c2, c3, c4, c5]:
+            c.font = fonte_normal
+            c.border = borda_fina
+            if idx % 2 == 0:
+                c.fill = fill_cinza_claro # Efeito zebra na planilha!
+                
+        linha_atual += 1
+
+    # Linha de Total Geral da Composição
+    ws.cell(row=linha_atual, column=4, value="TOTAL DA ETAPA:").font = fonte_bold
+    ws.cell(row=linha_atual, column=4).alignment = Alignment(horizontal="right")
+    
+    total_cell = ws.cell(row=linha_atual, column=5, value=soma_total_geral)
+    total_cell.font = fonte_bold
+    total_cell.number_format = '"R$"#,##0.00'
+    total_cell.alignment = Alignment(horizontal="right")
+
+    # Ajuste Automático da Largura das Colunas para não cortar o texto no Excel
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = col[0].column_letter
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+    # 4. SALVA O ARQUIVO EM MEMÓRIA E ENVIA VIA STREAM
+    conteudo_excel = io.BytesIO()
+    wb.save(conteudo_excel)
+    conteudo_excel.seek(0)
+    
+    nome_arquivo = f"Orcamento_{codigo_comp}_{estado_alvo}.xlsx"
+    return StreamingResponse(
+        conteudo_excel,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nome_arquivo}"}
+    )
