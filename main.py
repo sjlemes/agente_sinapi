@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from typing import List, Optional
+from openpyxl.utils import get_column_letter
 
 # Ferramentas para gerar planilha Excel
 from openpyxl import Workbook
@@ -517,9 +518,18 @@ def exportar_excel(request: OrcamentoRequest):
 
     # Ajuste Automático da Largura das Colunas para não cortar o texto no Excel
     for col in ws.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        col_letter = col[0].column_letter
-        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+        max_len = 0
+        col_letter = get_column_letter(col[0].column) # Captura a letra pelo índice numérico da coluna mãe
+        
+        for cell in col:
+            # Ignora a linha 1 (onde está o título gigante mesclado) para não distorcer a largura
+            if cell.row == 1:
+                continue
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
+        
+        # Define a largura com uma margem de segurança
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
 
     # 4. SALVA O ARQUIVO EM MEMÓRIA E ENVIA VIA STREAM
     conteudo_excel = io.BytesIO()
