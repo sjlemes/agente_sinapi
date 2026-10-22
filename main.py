@@ -19,12 +19,15 @@ from openpyxl.utils import get_column_letter
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+# Inicialização do client com a nova SDK (busca automaticamente GEMINI_API_KEY no ambiente)
+client = genai.Client()
+
 # Definição do modelo de entrada vindo do Ktor/Android
 class OrcamentoRequest(BaseModel):
     estado: str
     palavras_chave: str
     quantidade: float
-    desonerado: bool
+    desonerado: bool  # True para Desonerado, False para Não Desonerado
 
 # ----- EXTRAINDO CÓDIGOS COLUNA COM HIPERLINKS PLANILHA EXCEL ---
 def extrair_codigo_limpo(celula_valor) -> str:
@@ -249,9 +252,6 @@ GOOGLE_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1 DE PRODUÇÃO: PRINCIPAL (VERSÃO HIERÁRQUICA EM ÁRVORE) ---
-# Configuração do modelo Gemini (certifique-se de que a chave está configurada no seu ambiente)
-# genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-# client = genai.GenerativeModel("gemini-1.5-flash") # ou gemini-3.8-flash conforme seu ambiente
 @app.post("/calcular-orcamento")
 async def calcular_orcamento(dados: OrcamentoRequest):
     conn = sqlite3.connect("sinapi.db")
@@ -271,10 +271,11 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         parametros.append(f"%{termo}%")
     
     where_clause = " AND ".join(condicoes)
-    regime_filtro = "DESONERADO" if dados.desonerado.upper() == "SIM" else "NÃO DESONERADO"
+    
+    # Conversão elegante do booleano recebido para o padrão do banco
+    regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
     # 2. Consulta SQL Cruzada: Composições + Preços Regionais/Estado + Insumos da Tabela Analítica
-    # Buscamos a composição principal e seus respectivos insumos filhos associados via analitico
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
@@ -308,7 +309,6 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         }
     
     # 3. Organização e empacotamento dos dados reais para o Gemini
-    contexto_banco_real = []
     composicoes_processadas = {}
     
     for row in linhas:
@@ -326,18 +326,16 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         
         # Se houver insumo analítico vinculado, adiciona à lista da composição
         if cod_ins:
-            # Calcula o subvalor parcial do insumo (coeficiente * preço unitário de referência, se aplicável)
             composicoes_processadas[cod_comp]["insumos_filhos"].append({
                 "codigo_insumo": cod_ins,
                 "descricao_insumo": desc_ins,
-                "unidade": unid_ins if 'unidade_insumo' in locals() else unid_ins,
+                "unidade_insumo": unid_ins,
                 "coeficiente": coef
             })
 
-    # Converte o dicionário organizado em lista para o payload e para o prompt da IA
     dados_estruturados = list(composicoes_processadas.values())
 
-    # 4. Geração do Parecer Técnico com o Gemini (Engenheiro Consultor)
+    # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
     prompt_ia = f"""
     Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
     Abaixo estão os dados reais extraídos diretamente do banco de dados SQLite oficial da Caixa para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
@@ -350,8 +348,10 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     """
 
     try:
-        # Chamada ao Gemini (ajuste conforme a versão do SDK que você está utilizando no projeto)
-        response = client.generate_content(prompt_ia)
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt_ia
+        )
         relatorio_ia = response.text
     except Exception as e:
         relatorio_ia = f"Erro ao gerar parecer com a IA: {str(e)}"
