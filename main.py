@@ -10,8 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google import genai
-import google as genai
-from google.genai import types
 from typing import List, Optional
 from openpyxl.utils import get_column_letter
 
