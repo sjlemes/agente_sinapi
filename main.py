@@ -275,6 +275,11 @@ def calcular_orcamento(request: OrcamentoRequest):
                 )
     
     contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente exato localizado nas tabelas oficiais do SINAPI."
+
+    print("----------------------------------------------------------------")
+    print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
+    print(contexto_banco_real)
+    print("----------------------------------------------------------------")
     
     prompt = f"""
     Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
