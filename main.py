@@ -255,13 +255,11 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # 1. Tratamento seguro das palavras-chave para busca flexível por múltiplos termos
     termos = dados.palavras_chave.strip().split()
     if not termos:
         conn.close()
         raise HTTPException(status_code=400, detail="Informe ao menos uma palavra-chave para a busca.")
     
-    # Montagem dinâmica e segura de filtros LIKE para cada palavra
     condicoes = []
     parametros = []
     for termo in termos:
@@ -269,11 +267,9 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         parametros.append(f"%{termo}%")
     
     where_clause = " AND ".join(condicoes)
-    
-    # Conversão elegante do booleano recebido para o padrão do banco
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
-    # 2. Consulta SQL Cruzada: Composições + Preços Regionais/Estado + Insumos da Tabela Analítica
+    # Consulta SQL com JOIN na tabela analitico
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
@@ -300,49 +296,48 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     
     if not linhas:
         return {
-            "status": "sucesso",
-            "mensagem": "Nenhuma composição encontrada para os termos informados.",
-            "dados_brutos": [],
-            "relatorio_ia": "Nenhum dado encontrado no banco para gerar laudo."
+            "relatorio": "Nenhuma composição encontrada para os termos informados no banco de dados.",
+            "composicoes": []
         }
     
-    # 3. Organização e empacotamento dos dados reais para o Gemini
+    # Organização estruturada compatível com o formato esperado pelo Android
     composicoes_processadas = {}
     
     for row in linhas:
         cod_comp, desc_comp, unid_comp, preco_unit, regime, cod_ins, desc_ins, unid_ins, coef = row
         
         if cod_comp not in composicoes_processadas:
+            preco_base = preco_unit or 0.0
+            total_calculado = preco_base * dados.quantidade
+            
             composicoes_processadas[cod_comp] = {
-                "codigo": cod_comp,
+                "codigo": str(cod_comp),
                 "descricao": desc_comp,
                 "unidade": unid_comp,
-                "preco_unitario": preco_unit or 0.0,
-                "regime": regime,
-                "insumos_filhos": []
+                "total": f"R$ {total_calculado:,.2f}",
+                "insumos": []
             }
         
-        # Se houver insumo analítico vinculado, adiciona à lista da composição
         if cod_ins:
-            composicoes_processadas[cod_comp]["insumos_filhos"].append({
-                "codigo_insumo": cod_ins,
-                "descricao_insumo": desc_ins,
-                "unidade_insumo": unid_ins,
+            composicoes_processadas[cod_comp]["insumos"].append({
+                "codigo": str(cod_ins),
+                "descricao": desc_ins,
+                "unidade": unid_ins,
                 "coeficiente": coef
             })
 
-    dados_estruturados = list(composicoes_processadas.values())
+    composicoes_finais = list(composicoes_processadas.values())
 
-    # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
+    # Geração do Parecer Técnico com o Gemini
     prompt_ia = f"""
     Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
-    Abaixo estão os dados reais extraídos diretamente do banco de dados SQLite oficial da Caixa para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
+    Abaixo estão os dados reais extraídos do SQLite para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
 
-    {dados_estruturados}
+    {composicoes_finais}
 
     Quantidade desejada na obra: {dados.quantidade}
     
-    Com base estritamente nestes dados factuais, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade, composição de custos e observações de execução para este cenário. Seja direto, profissional e formal.
+    Com base estritamente nestes dados, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade e custos. Seja direto e profissional.
     """
 
     try:
@@ -352,12 +347,10 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         )
         relatorio_ia = response.text
     except Exception as e:
-        relatorio_ia = f"Erro ao gerar parecer com a IA: {str(e)}"
+        relatorio_ia = f"⚠️ Instabilidade temporária na IA do Google, mas os dados do banco foram carregados com sucesso. (Erro: {str(e)})"
 
+    # RETORNO EXATAMENTE IGUAL AO CONTRATO ORIGINAL QUE O APP ESPERA
     return {
-        "status": "sucesso",
-        "quantidade_solicitada": dados.quantidade,
-        "regime": regime_filtro,
-        "dados_brutos": dados_estruturados,
-        "relatorio_ia": relatorio_ia
+        "relatorio": relatorio_ia,
+        "composicoes": composicoes_finais
     }
