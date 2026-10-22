@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google import genai
+from google.genai import types
 from typing import List, Optional
 from openpyxl.utils import get_column_letter
 
@@ -251,106 +252,140 @@ client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1 DE PRODUÇÃO: PRINCIPAL (VERSÃO HIERÁRQUICA EM ÁRVORE) ---
 @app.post("/calcular-orcamento")
-async def calcular_orcamento(dados: OrcamentoRequest):
+def calcular_orcamento(request: OrcamentoRequest):
+    termo_bruto = request.palavras_chave.strip()
+    
+    # 🚨 DECLARAÇÃO DAS VARIÁVEIS CRUCIAIS DE ESCOPO
+    estado_alvo = request.estado.upper().strip()
+    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
+    regime_busca_like = f"%{regime_texto}%"
+    
+    # Quebra o texto digitado pelo celular em palavras limpas
+    palavras = [p.upper().strip() for p in termo_bruto.split() if p.strip()]
+    
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    termos = dados.palavras_chave.strip().split()
-    if not termos:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Informe ao menos uma palavra-chave para a busca.")
-    
-    condicoes = []
-    parametros = []
-    for termo in termos:
-        condicoes.append("c.descricao LIKE ?")
-        parametros.append(f"%{termo}%")
-    
-    where_clause = " AND ".join(condicoes)
-    regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
-    
-    # Consulta SQL com JOIN na tabela analitico
-    query = f"""
-        SELECT 
-            c.codigo AS codigo_comp, 
-            c.descricao AS desc_comp, 
-            c.unidade AS unid_comp,
-            i.preco_unitario,
-            i.regime,
-            a.codigo_insumo,
-            a.descricao_insumo,
-            a.unidade_insumo,
-            a.coeficiente
-        FROM composicoes c
-        JOIN insumos i ON c.codigo = i.codigo
-        LEFT JOIN analitico a ON c.codigo = a.codigo_composicao
-        WHERE ({where_clause}) 
-          AND i.regime = ?
-        LIMIT 50
-    """
-    
-    parametros_completos = parametros + [regime_filtro]
-    cursor.execute(query, parametros_completos)
-    linhas = cursor.fetchall()
+    # Montagem da busca usando Listas estáveis []
+    if termo_bruto.isdigit() or not palavras:
+        sql = """
+            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
+            FROM composicoes c
+            JOIN insumos i ON c.codigo = i.codigo
+            WHERE (c.codigo = ? OR c.descricao LIKE ?) AND i.regime LIKE ?
+            GROUP BY c.codigo LIMIT 15
+        """
+        parametros = [termo_bruto, f"%{termo_bruto}%", regime_busca_like]
+    else:
+        # Monta um filtro 'LIKE' dinâmico para cada palavra isolada
+        condicoes_likes = " AND ".join(["c.descricao LIKE ?" for _ in palavras])
+        
+        sql = f"""
+            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
+            FROM composicoes c
+            JOIN insumos i ON c.codigo = i.codigo
+            WHERE ({condicoes_likes}) AND i.regime LIKE ?
+            GROUP BY c.codigo LIMIT 15
+        """
+        parametros = [f"%{p}%" for p in palavras]
+        parametros.append(regime_busca_like)
+        
+    cursor.execute(sql, parametros)
+    linhas_banco = cursor.fetchall()
     conn.close()
     
-    if not linhas:
-        return {
-            "relatorio": "Nenhuma composição encontrada para os termos informados no banco de dados.",
-            "composicoes": []
-        }
+    # Mapeia coluna por coluna explicitamente para estruturar os dados para a IA
+    dados_estruturados_reais = []
+    if linhas_banco:
+        for static_linha in linhas_banco:
+            if len(static_linha) >= 4:
+                codigo_val = str(static_linha[0]).strip()
+                desc_val = str(static_linha[1]).strip().upper()
+                unid_val = str(static_linha[2]).strip().upper()
+                preco_val = float(static_linha[3]) if static_linha[3] is not None else 0.0
+                
+                dados_estruturados_reais.append(
+                    f"Código SINAPI: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço de Referência: R$ {preco_val:.2f}"
+                )
     
-    # Organização estruturada compatível com o formato esperado pelo Android
-    composicoes_processadas = {}
+    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente exato localizado nas tabelas oficiais do SINAPI."
+
+    print("----------------------------------------------------------------")
+    print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
+    print(contexto_banco_real)
+    print("----------------------------------------------------------------")
     
-    for row in linhas:
-        cod_comp, desc_comp, unid_comp, preco_unit, regime, cod_ins, desc_ins, unid_ins, coef = row
-        
-        if cod_comp not in composicoes_processadas:
-            preco_base = preco_unit or 0.0
-            total_calculado = preco_base * dados.quantidade
-            
-            composicoes_processadas[cod_comp] = {
-                "codigo": str(cod_comp),
-                "descricao": desc_comp,
-                "unidade": unid_comp,
-                "total": f"R$ {total_calculado:,.2f}",
-                "insumos": []
-            }
-        
-        if cod_ins:
-            composicoes_processadas[cod_comp]["insumos"].append({
-                "codigo": str(cod_ins),
-                "descricao": desc_ins,
-                "unidade": unid_ins,
-                "coeficiente": coef
-            })
-
-    composicoes_finais = list(composicoes_processadas.values())
-
-    # Geração do Parecer Técnico com o Gemini
-    prompt_ia = f"""
-    Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
-    Abaixo estão os dados reais extraídos do SQLite para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
-
-    {composicoes_finais}
-
-    Quantidade desejada na obra: {dados.quantidade}
+    prompt = f"""
+    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
+    O usuário quer um orçamento para o serviço: "{request.palavras_chave}" na quantidade de: {request.quantidade}.
+    O estado de interesse dele é: {estado_alvo} sob o regime de encargos: {regime_texto}.
     
-    Com base estritamente nestes dados, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade e custos. Seja direto e profissional.
+    Aqui estão os dados reais extraídos diretamente das tabelas oficiais da planilha nacional unificada:
+    {contexto_banco_real}
+    
+    Com base estritamente nessas referências, monte o orçamento estruturado em composições e seus respectivos insumos e materiais. Use o código, descrição e preço unitário encontrados acima.
     """
 
+    # 🛠️ ESQUEMA RECONFIGURADO EM ÁRVORE HIERÁRQUICA PARA O JETPACK COMPOSE
+    config_ia = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "properties": {
+                "relatorio": {"type": "STRING"},
+                "composicoes": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "codigo": {"type": "STRING"},
+                            "descricao": {"type": "STRING"},
+                            "unidade": {"type": "STRING"},
+                            "total": {"type": "STRING"},
+                            "insumos": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "nome": {"type": "STRING"},
+                                        "qtd": {"type": "NUMBER"},
+                                        "unidade": {"type": "STRING"},
+                                        "total": {"type": "STRING"}
+                                    },
+                                    "required": ["nome", "qtd", "unidade", "total"]
+                                }
+                            }
+                        },
+                        "required": ["codigo", "descricao", "unidade", "total", "insumos"]
+                    }
+                }
+            },
+            "required": ["relatorio", "composicoes"]
+        }
+    )
+    
     try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt_ia
+        resposta = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt,
+            config=config_ia
         )
-        relatorio_ia = response.text
+        dados_resposta = json.loads(resposta.text)
+        return {
+            "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
+            "composicoes": dados_resposta.get("composicoes", [])
+        }
     except Exception as e:
-        relatorio_ia = f"⚠️ Instabilidade temporária na IA do Google, mas os dados do banco foram carregados com sucesso. (Erro: {str(e)})"
-
-    # RETORNO EXATAMENTE IGUAL AO CONTRATO ORIGINAL QUE O APP ESPERA
-    return {
-        "relatorio": relatorio_ia,
-        "composicoes": composicoes_finais
-    }
+        print(f"ROBÔ SINAPI: Instabilidade na API de IA: {str(e)}")
+        return {
+            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura local está 100% operacional. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
+            "composicoes": [
+                {
+                    "codigo": "ERRO",
+                    "descricao": "Servidor do Google Ocupado",
+                    "unidade": "Erro",
+                    "total": "Tente de Novo",
+                    "insumos": []
+                }
+            ]
+        }
