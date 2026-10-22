@@ -252,78 +252,100 @@ client = genai.Client(api_key=GOOGLE_API_KEY)
 
 # --- ROTA 1 DE PRODUÇÃO: PRINCIPAL (VERSÃO HIERÁRQUICA EM ÁRVORE) ---
 @app.post("/calcular-orcamento")
-def calcular_orcamento(request: OrcamentoRequest):
-    termo_bruto = request.palavras_chave.strip()
-    
-    # 🚨 DECLARAÇÃO DAS VARIÁVEIS CRUCIAIS DE ESCOPO
-    estado_alvo = request.estado.upper().strip()
-    regime_texto = "DESONERADO" if request.desonerado else "NÃO DESONERADO"
-    regime_busca_like = f"%{regime_texto}%"
-    
-    # Quebra o texto digitado pelo celular em palavras limpas
-    palavras = [p.upper().strip() for p in termo_bruto.split() if p.strip()]
-    
+async def calcular_orcamento(dados: OrcamentoRequest):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    # Montagem da busca usando Listas estáveis []
-    if termo_bruto.isdigit() or not palavras:
-        sql = """
-            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
-            FROM composicoes c
-            JOIN insumos i ON c.codigo = i.codigo
-            WHERE (c.codigo = ? OR c.descricao LIKE ?) AND i.regime LIKE ?
-            GROUP BY c.codigo LIMIT 15
-        """
-        parametros = [termo_bruto, f"%{termo_bruto}%", regime_busca_like]
-    else:
-        # Monta um filtro 'LIKE' dinâmico para cada palavra isolada
-        condicoes_likes = " AND ".join(["c.descricao LIKE ?" for _ in palavras])
-        
-        sql = f"""
-            SELECT c.codigo, c.descricao, c.unidade, i.preco_unitario 
-            FROM composicoes c
-            JOIN insumos i ON c.codigo = i.codigo
-            WHERE ({condicoes_likes}) AND i.regime LIKE ?
-            GROUP BY c.codigo LIMIT 15
-        """
-        parametros = [f"%{p}%" for p in palavras]
-        parametros.append(regime_busca_like)
-        
-    cursor.execute(sql, parametros)
-    linhas_banco = cursor.fetchall()
+    # 1. Tratamento seguro das palavras-chave para busca flexível por múltiplos termos
+    termos = dados.palavras_chave.strip().split()
+    if not termos:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Informe ao menos uma palavra-chave para a busca.")
+    
+    # Montagem dinâmica e segura de filtros LIKE para cada palavra
+    condicoes = []
+    parametros = []
+    for termo in termos:
+        condicoes.append("c.descricao LIKE ?")
+        parametros.append(f"%{termo}%")
+    
+    where_clause = " AND ".join(condicoes)
+    regime_filtro = "DESONERADO" if dados.desonerado.upper() == "SIM" else "NÃO DESONERADO"
+    
+    # 2. Consulta SQL Cruzada: Composições + Preços Regionais/Estado + Insumos da Tabela Analítica
+    # Buscamos a composição principal e seus respectivos insumos filhos associados via analitico
+    query = f"""
+        SELECT 
+            c.codigo AS codigo_comp, 
+            c.descricao AS desc_comp, 
+            c.unidade AS unid_comp,
+            i.preco_unitario,
+            i.regime,
+            a.codigo_insumo,
+            a.descricao_insumo,
+            a.unidade_insumo,
+            a.coeficiente
+        FROM composicoes c
+        JOIN insumos i ON c.codigo = i.codigo
+        LEFT JOIN analitico a ON c.codigo = a.codigo_composicao
+        WHERE ({where_clause}) 
+          AND i.regime = ?
+        LIMIT 50
+    """
+    
+    parametros_completos = parametros + [regime_filtro]
+    cursor.execute(query, parametros_completos)
+    linhas = cursor.fetchall()
     conn.close()
     
-    # Mapeia coluna por coluna explicitamente para estruturar os dados para a IA
-    dados_estruturados_reais = []
-    if linhas_banco:
-        for static_linha in linhas_banco:
-            if len(static_linha) >= 4:
-                codigo_val = str(static_linha[0]).strip()
-                desc_val = str(static_linha[1]).strip().upper()
-                unid_val = str(static_linha[2]).strip().upper()
-                preco_val = float(static_linha[3]) if static_linha[3] is not None else 0.0
-                
-                dados_estruturados_reais.append(
-                    f"Código SINAPI: {codigo_val} | Descrição: {desc_val} | Unidade: {unid_val} | Preço de Referência: R$ {preco_val:.2f}"
-                )
+    if not linhas:
+        return {
+            "status": "sucesso",
+            "mensagem": "Nenhuma composição encontrada para os termos informados.",
+            "dados_brutos": [],
+            "relatorio_ia": "Nenhum dado encontrado no banco para gerar laudo."
+        }
     
-    contexto_banco_real = "\n".join(dados_estruturados_reais) if dados_estruturados_reais else "Nenhum item correspondente exato localizado nas tabelas oficiais do SINAPI."
+    # 3. Organização e empacotamento dos dados reais para o Gemini
+    contexto_banco_real = []
+    composicoes_processadas = {}
+    
+    for row in linhas:
+        cod_comp, desc_comp, unid_comp, preco_unit, regime, cod_ins, desc_ins, unid_ins, coef = row
+        
+        if cod_comp not in composicoes_processadas:
+            composicoes_processadas[cod_comp] = {
+                "codigo": cod_comp,
+                "descricao": desc_comp,
+                "unidade": unid_comp,
+                "preco_unitario": preco_unit or 0.0,
+                "regime": regime,
+                "insumos_filhos": []
+            }
+        
+        # Se houver insumo analítico vinculado, adiciona à lista da composição
+        if cod_ins:
+            # Calcula o subvalor parcial do insumo (coeficiente * preço unitário de referência, se aplicável)
+            composicoes_processadas[cod_comp]["insumos_filhos"].append({
+                "codigo_insumo": cod_ins,
+                "descricao_insumo": desc_ins,
+                "unidade": unid_ins if 'unidade_insumo' in locals() else unid_ins,
+                "coeficiente": coef
+            })
 
-    print("----------------------------------------------------------------")
-    print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
-    print(contexto_banco_real)
-    print("----------------------------------------------------------------")
+    # Converte o dicionário organizado em lista para o payload e para o prompt da IA
+    dados_estruturados = list(composicoes_processadas.values())
+
+    # 4. Geração do Parecer Técnico com o Gemini (Engenheiro Consultor)
+    prompt_ia = f"""
+    Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
+    Abaixo estão os dados reais extraídos diretamente do banco de dados SQLite oficial da Caixa para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
+
+    {dados_estruturados}
+
+    Quantidade desejada na obra: {dados.quantidade}
     
-    prompt = f"""
-    Você é um Engenheiro de Custos especialista na tabela SINAPI da Caixa Econômica Federal.
-    O usuário quer um orçamento para o serviço: "{request.palavras_chave}" na quantidade de: {request.quantidade}.
-    O estado de interesse dele é: {estado_alvo} sob o regime de encargos: {regime_texto}.
-    
-    Aqui estão os dados reais extraídos diretamente das tabelas oficiais da planilha nacional unificada:
-    {contexto_banco_real}
-    
-    Com base estritamente nessas referências, monte o orçamento estruturado em composições e seus respectivos insumos e materiais. Use o código, descrição e preço unitário encontrados acima.
+    Com base estritamente nestes dados factuais, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade, composição de custos e observações de execução para este cenário. Seja direto, profissional e formal.
     """
 
     # 🛠️ ESQUEMA RECONFIGURADO EM ÁRVORE HIERÁRQUICA PARA O JETPACK COMPOSE
@@ -367,7 +389,7 @@ def calcular_orcamento(request: OrcamentoRequest):
     try:
         resposta = client.models.generate_content(
             model='gemini-3.8-flash',
-            contents=prompt,
+            contents=prompt_ia,
             config=config_ia
         )
         dados_resposta = json.loads(resposta.text)
