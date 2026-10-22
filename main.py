@@ -270,7 +270,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         parametros.append(f"%{termo}%")
     
     where_clause = " AND ".join(condicoes)
-    regime_filtro = "DESONERADO" if dados.desonerado.upper() == "SIM" else "NÃO DESONERADO"
+    regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
     # 2. Consulta SQL Cruzada: Composições + Preços Regionais/Estado + Insumos da Tabela Analítica
     # Buscamos a composição principal e seus respectivos insumos filhos associados via analitico
