@@ -270,10 +270,11 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         parametros.append(f"%{termo}%")
     
     where_clause = " AND ".join(condicoes)
+    
+    # Conversão elegante do booleano recebido para o padrão do banco
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
     # 2. Consulta SQL Cruzada: Composições + Preços Regionais/Estado + Insumos da Tabela Analítica
-    # Buscamos a composição principal e seus respectivos insumos filhos associados via analitico
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
@@ -307,7 +308,6 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         }
     
     # 3. Organização e empacotamento dos dados reais para o Gemini
-    contexto_banco_real = []
     composicoes_processadas = {}
     
     for row in linhas:
@@ -325,23 +325,16 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         
         # Se houver insumo analítico vinculado, adiciona à lista da composição
         if cod_ins:
-            # Calcula o subvalor parcial do insumo (coeficiente * preço unitário de referência, se aplicável)
             composicoes_processadas[cod_comp]["insumos_filhos"].append({
                 "codigo_insumo": cod_ins,
                 "descricao_insumo": desc_ins,
-                "unidade": unid_ins if 'unidade_insumo' in locals() else unid_ins,
+                "unidade_insumo": unid_ins,
                 "coeficiente": coef
             })
 
-    # Converte o dicionário organizado em lista para o payload e para o prompt da IA
     dados_estruturados = list(composicoes_processadas.values())
 
-    print("----------------------------------------------------------------")
-    print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
-    print(dados_estruturados)
-    print("----------------------------------------------------------------")
-
-    # 4. Geração do Parecer Técnico com o Gemini (Engenheiro Consultor)
+    # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
     prompt_ia = f"""
     Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
     Abaixo estão os dados reais extraídos diretamente do banco de dados SQLite oficial da Caixa para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
@@ -353,77 +346,19 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     Com base estritamente nestes dados factuais, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade, composição de custos e observações de execução para este cenário. Seja direto, profissional e formal.
     """
 
-    # 🛠️ ESQUEMA RECONFIGURADO EM ÁRVORE HIERÁRQUICA PARA O JETPACK COMPOSE
-    config_ia = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema={
-            "type": "OBJECT",
-            "properties": {
-                "relatorio": {"type": "STRING"},
-                "composicoes": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "codigo": {"type": "STRING"},
-                            "descricao": {"type": "STRING"},
-                            "unidade": {"type": "STRING"},
-                            "total": {"type": "STRING"},
-                            "insumos": {
-                                "type": "ARRAY",
-                                "items": {
-                                    "type": "OBJECT",
-                                    "properties": {
-                                        "nome": {"type": "STRING"},
-                                        "qtd": {"type": "NUMBER"},
-                                        "unidade": {"type": "STRING"},
-                                        "total": {"type": "STRING"}
-                                    },
-                                    "required": ["nome", "qtd", "unidade", "total"]
-                                }
-                            }
-                        },
-                        "required": ["codigo", "descricao", "unidade", "total", "insumos"]
-                    }
-                }
-            },
-            "required": ["relatorio", "composicoes"]
-        }
-    )
-    
     try:
-        resposta = client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt_ia,
-            config=config_ia
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt_ia
         )
-        dados_resposta = json.loads(resposta.text)
-
-
-
-        print("----------------------------------------------------------------")
-        print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
-        print(resposta.text)
-        print("----------------------------------------------------------------")
-
-
-
-
-        return {
-            "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
-            "composicoes": dados_resposta.get("composicoes", [])
-        }
+        relatorio_ia = response.text
     except Exception as e:
-        print(f"ROBÔ SINAPI: Instabilidade na API de IA: {str(e)}")
-        return {
-            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura local está 100% operacional. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
-            "composicoes": [
-                {
-                    "codigo": "ERRO",
-                    "descricao": "Servidor do Google Ocupado",
-                    "unidade": "Erro",
-                    "total": "Tente de Novo",
-                    "insumos": []
-                }
-            ]
-        }
+        relatorio_ia = f"Erro ao gerar parecer com a IA: {str(e)}"
+
+    return {
+        "status": "sucesso",
+        "quantidade_solicitada": dados.quantidade,
+        "regime": regime_filtro,
+        "dados_brutos": dados_estruturados,
+        "relatorio_ia": relatorio_ia
+    }
