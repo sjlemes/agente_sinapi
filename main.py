@@ -304,12 +304,13 @@ async def calcular_orcamento(dados: OrcamentoRequest):
             "relatorio": "⚠️ Nenhuma composição encontrada para os termos informados no banco de dados.",
             "composicoes": []
         }
-    
+
     # 3. Organização e empacotamento hierárquico dos dados reais para o Gemini e Compose
     composicoes_processadas = {}
+    codigos_encontrados = []
     
     for row in linhas:
-        cod_comp, desc_comp, unid_comp, preco_unit, regime, cod_ins, desc_ins, unid_ins, coef = row
+        cod_comp, desc_comp, unid_comp, preco_unit, regime = row[0], row[1], row[2], row[3], row[4]
         
         if cod_comp not in composicoes_processadas:
             preco_base = preco_unit or 0.0
@@ -322,25 +323,42 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                 "total": f"R$ {total_comp:,.2f}",
                 "insumos": []
             }
+            codigos_encontrados.append(str(cod_comp))
+
+    # 🔍 BUSCA COMPLEMENTAR SEGURA DOS INSUMOS FILHOS NA TABELA ANALITICO
+    if codigos_encontrados:
+        conn_ana = sqlite3.connect("sinapi.db")
+        cursor_ana = conn_ana.cursor()
         
-        # Se houver insumo analítico vinculado, calcula a quantidade total baseada no coeficiente * quantidade da obra
-        if cod_ins:
-            coef_val = coef or 0.0
-            qtd_insumo_total = coef_val * dados.quantidade
-            # Estimativa de subtotal do insumo se houver preço base (ou formatado limpo)
-            composicoes_processadas[cod_comp]["insumos"].append({
-                "nome": f"[{cod_ins}] {desc_ins}",
-                "qtd": qtd_insumo_total,
-                "unidade": unid_ins or "-",
-                "total": f"Coef: {coef_val:.4f}"
-            })
+        placeholders = ",".join(["?"] * len(codigos_encontrados))
+        query_ana = f"""
+            SELECT codigo_composicao, codigo_insumo, descricao_insumo, unidade_insumo, coeficiente
+            FROM analitico
+            WHERE codigo_composicao IN ({placeholders})
+        """
+        cursor_ana.execute(query_ana, codigos_encontrados)
+        linhas_analiticas = cursor_ana.fetchall()
+        conn_ana.close()
+        
+        for ana_row in linhas_analiticas:
+            c_comp, c_ins, d_ins, u_ins, coef = ana_row
+            if c_comp in composicoes_processadas:
+                coef_val = coef or 0.0
+                qtd_insumo_total = coef_val * dados.quantidade
+                composicoes_processadas[c_comp]["insumos"].append({
+                    "nome": f"[{c_ins}] {d_ins}" if d_ins else f"[{c_ins}] Insumo Vinculado",
+                    "qtd": qtd_insumo_total,
+                    "unidade": u_ins or "-",
+                    "total": f"Coef: {coef_val:.4f}"
+                })
 
     dados_estruturados = list(composicoes_processadas.values())
 
     print("----------------------------------------------------------------")
     print("🔎 ROBÔ SINAPI: RAIO-X HIERÁRQUICO ENVIADO PARA IA...")
     print(f"Total de composições mapeadas: {len(dados_estruturados)}")
-    print(dados_estruturados)
+    for item in dados_estruturados:
+        print(f"   -> Comp: {item['codigo']} | Insumos filhos encontrados: {len(item['insumos'])}")
     print("----------------------------------------------------------------")
 
     # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
