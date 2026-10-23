@@ -28,45 +28,44 @@ class OrcamentoRequest(BaseModel):
     quantidade: float
     desonerado: bool  # True para Desonerado, False para Não Desonerado
 
-# ----- EXTRAINDO CÓDIGOS COLUNA COM HIPERLINKS PLANILHA EXCEL ---
+import re
+import pandas as pd
+import sqlite3
+import os
+from contextlib import asynccontextmanager
+
 def extrair_codigo_limpo(celula_valor) -> str:
-  """Extrai o código oficial limpo de uma célula do Excel,
+    """Extrai o código oficial limpo de uma célula do Excel,
+    removendo fórmulas de HIPERLINK e padronizando estritamente para dígitos.
+    """
+    if celula_valor is None:
+        return ""
+    
+    val_str = str(celula_valor).strip()
+    
+    # Se a célula contém uma fórmula de hiperlink (ex: =HIPERLINK("...", "12345"))
+    if val_str.startswith("="):
+        match_hiperlink = re.search(r'HIPERLINK\s*\([^,;]+[,;]\s*["\']?([^"\']+)["\']?\)', val_str, re.IGNORECASE)
+        if match_hiperlink:
+            val_str = match_hiperlink.group(1).strip()
+        else:
+            # Fallback: pega o último trecho entre aspas da fórmula
+            textos_aspas = re.findall(r'"([^"]+)"', val_str)
+            if textos_aspas:
+                val_str = textos_aspas[-1].strip()
 
-  removendo fórmulas de HIPERLINK e padronizando para dígitos.
-  """
-  if celula_valor is None:
-    return ""
+    # Remove ponto zero caso tenha vindo como float (ex: "12345.0")
+    if val_str.endswith(".0"):
+        val_str = val_str[:-2]
 
-  val_str = str(celula_valor).strip()
+    # Isola estritamente os dígitos do código oficial da Caixa
+    val_codigo = "".join(filter(str.isdigit, val_str))
+    return val_codigo
 
-  # Se a célula contém uma fórmula de hiperlink (ex: =HIPERLINK("...", "12345"))
-  if val_str.startswith("="):
-    # Procura pelo padrão do segundo argumento da função HIPERLINK (o texto visível)
-    match_hiperlink = re.search(
-        r'HIPERLINK\s*\([^,;]+[,;]\s*["\']?([^"\']+)["\']?\)',
-        val_str,
-        re.IGNORECASE,
-    )
-    if match_hiperlink:
-      val_str = match_hiperlink.group(1).strip()
-    else:
-      # Fallback: pega o último trecho entre aspas da fórmula se o regex acima não pegar
-      textos_aspas = re.findall(r'"([^"]+)"', val_str)
-      if textos_aspas:
-        val_str = textos_aspas[-1].strip()
 
-  # Remove ponto zero caso tenha vindo como float (ex: "12345.0")
-  if val_str.endswith(".0"):
-    val_str = val_str[:-2]
-
-  # Isola estritamente os dígitos do código oficial da Caixa
-  val_codigo = "".join(filter(str.isdigit, val_str))
-  return val_codigo
-
-# --- CARREGAMENTO RELACIONAL, MULTIINDEX E GUARDIÃO DE LAYOUT (LIFESPAN) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite definitivo...")
+    print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite definitivo com Regex...")
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
@@ -91,7 +90,7 @@ async def lifespan(app: FastAPI):
 
     try:
         if os.path.exists(nome_arquivo_local):
-            print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando varredura plana...")
+            print(f"ROBÔ SINAPI: Localizado arquivo {nome_arquivo_local}. Iniciando varredura limpa...")
             excel_file = pd.ExcelFile(nome_arquivo_local, engine="openpyxl")
             
             cursor.execute("DELETE FROM composicoes")
@@ -106,9 +105,8 @@ async def lifespan(app: FastAPI):
                 # 🧱 1. LEITURA PLANA POR COORDENADAS FIXAS REAL DA CAIXA
                 if nome_aba_upper in ["CSD", "CCD", "ISD", "ICD"]:
                     regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                    print(f"ROBÔ SINAPI: Devorando aba [{nome_aba}] por coordenadas fixas...")
+                    print(f"ROBÔ SINAPI: Devorando aba [{nome_aba}] com limpeza de hiperlinks...")
                     
-                    # skiprows=9 joga o cabeçalho decorativo fora. A linha 10 vira o índice dos dados.
                     df = pd.read_excel(
                         nome_arquivo_local, 
                         sheet_name=nome_aba, 
@@ -117,20 +115,18 @@ async def lifespan(app: FastAPI):
                         engine_kwargs={"data_only": True, "read_only": True}
                     )
                     
-                    # Mapeamento estrito por posições (Colunas A, B, C, D estruturadas)
                     for _, linha in df.iterrows():
                         if len(linha) >= 4:
-                            # 🚨 CORREÇÃO: Usamos .values para extrair o texto limpo, livre de objetos internos do Pandas
                             desc_bruta = str(linha.values[2]).strip().upper() if pd.notna(linha.values[2]) else ""
                             
                             if desc_bruta and desc_bruta not in ["DESCRIÇÃO", "DESCRIÇÃO DA COMPOSIÇÃO", "NONE", "NAN"]:
                                 unid_val = str(linha.values[3]).upper().strip() if pd.notna(linha.values[3]) else "-"
                                 
-                                celula_codigo = linha.values[1]  # Pega o valor bruto da célula B
+                                # 🚨 APLICANDO A FUNÇÃO DE LIMPEZA ROBUSTA DE CÓDIGOS
+                                celula_codigo = linha.values[1]
                                 val_codigo = extrair_codigo_limpo(celula_codigo)
-
-                                # Se o código ficar vazio por algum motivo extremo, aplicamos o fallback seguro baseado na descrição
-                                if not val_codigo or val_codigo == "0":
+                                
+                                if not val_codigo or len(val_codigo) < 3:
                                     val_codigo = str(abs(hash(desc_bruta)))[:6]
 
                                 if "CS" in nome_aba_upper or "CC" in nome_aba_upper:
@@ -139,7 +135,6 @@ async def lifespan(app: FastAPI):
                                         VALUES (?, ?, ?)
                                     """, (val_codigo, desc_bruta, unid_val))
                                 
-                                # LOOP DE CUSTOS DOS ESTADOS (Coluna E em diante, pulando de 2 em 2)
                                 for i in range(4, len(linha), 2):
                                     preco = 0.0
                                     try:
@@ -153,15 +148,13 @@ async def lifespan(app: FastAPI):
                                         VALUES (?, ?, ?, ?, ?, ?)
                                     """, ("NACIONAL", val_codigo, desc_bruta, unid_val, preco, regime_aba))
 
-                # 🧱 2. PROCESSAMENTO INTELIGENTE DA ABA ANALÍTICO (BASEADO NOS NOMES REAIS DA LINHA 10)
+                # 🧱 2. PROCESSAMENTO INTELIGENTE DA ABA ANALÍTICO COM LIMPEZA DE CÓDIGOS
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
-                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna de forma plana...")
+                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna com limpeza de códigos...")
                     df_ana = pd.read_excel(nome_arquivo_local, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
                     
-                    # Padroniza as colunas da aba analítica
                     df_ana.columns = [str(c).replace("\n", " ").replace("\r", " ").strip().upper() for c in df_ana.columns]
                     
-                    # Detecta dinamicamente as colunas B, D, E, F e G pelos nomes da linha 10
                     col_comp = next((c for c in df_ana.columns if "COMPOSIÇÃO" in c or "COMPOSICAO" in c), None)
                     col_item = next((c for c in df_ana.columns if "ITEM" in c or "INSUMO" in c or "CÓDIGO" in c), None)
                     col_desc_item = next((c for c in df_ana.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
@@ -170,19 +163,11 @@ async def lifespan(app: FastAPI):
                     
                     if col_comp and col_item:
                         for _, linha in df_ana.iterrows():
-                            # Limpa e isola o código da composição pai
-                            raw_comp = linha[col_comp]
-                            val_comp = extrair_codigo_limpo(raw_comp)
-
-                            raw_item = linha[col_item]
-                            val_item = extrair_codigo_limpo(raw_item)
+                            # 🚨 APLICANDO A FUNÇÃO DE LIMPEZA NA ABA ANALÍTICA
+                            val_comp = extrair_codigo_limpo(linha[col_comp])
+                            val_item = extrair_codigo_limpo(linha[col_item])
                             
-                            # Limpa e isola o código do insumo filho
-                            raw_item = str(linha[col_item]).strip()
-                            if raw_item.endswith(".0"): raw_item = raw_item[:-2]
-                            val_item = "".join(filter(str.isdigit, raw_item))
-                            
-                            if val_comp and val_item and len(val_comp) >= 4 and len(val_item) >= 4:
+                            if val_comp and val_item:
                                 desc_ins = str(linha[col_desc_item]).upper().strip() if col_desc_item and pd.notna(linha[col_desc_item]) else ""
                                 unid_ins = str(linha[col_unid_item]).upper().strip() if col_unid_item and pd.notna(linha[col_unid_item]) else "-"
                                 
@@ -199,48 +184,12 @@ async def lifespan(app: FastAPI):
                                 """, (val_comp, val_item, desc_ins, unid_ins, coef))
             
             conn.commit()
-            print("ROBÔ SINAPI: Base Relacional Nacional SQLite populada com sucesso de forma plana!")
-
-            # --- CHECANDO SE PLANILHA FOI DEPURADA E SQLITE POPULADO---
-            print("----------------------------------------------------------------")
-            print("🔎 ROBÔ SINAPI: INICIANDO RAIO-X AUDITORIA DO BANCO DE DADOS...")
-            
-            cursor.execute("SELECT COUNT(*) FROM composicoes")
-            print(f"📊 TOTAL DE COMPOSIÇÕES INDEXADAS: {cursor.fetchone()[0]} linhas.")
-            
-            cursor.execute("SELECT COUNT(*) FROM insumos")
-            print(f"📊 TOTAL DE INSUMOS INDEXADOS: {cursor.fetchone()[0]} linhas.")
-            
-            cursor.execute("SELECT COUNT(*) FROM analitico")
-            print(f"📊 TOTAL DE LINHAS NO ANALÍTICO: {cursor.fetchone()[0]} linhas.")
-
-            print("\n📋 MOSTRANDO AS 3 PRIMEIRAS COMPOSIÇÕES SALVAS:")
-            cursor.execute("SELECT codigo, unidade, descricao FROM composicoes LIMIT 3")
-            for idx, am in enumerate(cursor.fetchall()):
-                # Imprime os índices 0 (Código), 1 (Unidade) e 2 (Descrição) da tupla do banco
-                print(f"   Comp {idx+1} -> Código: [{am[0]}] | Unidade: [{am[1]}] | Descrição: {am[2][:40]}...")
-
-
-            print("\n📋 TESTANDO LOG DE CONSULTA REAL (SIMULAÇÃO DE BUSCA POR 'ALVENARIA'):")
-            cursor.execute("""
-                SELECT c.codigo, i.preco_unitario, c.descricao 
-                FROM composicoes c
-                JOIN insumos i ON c.codigo = i.codigo
-                WHERE c.descricao LIKE '%ALVENARIA%'
-                LIMIT 2
-            """)
-            testes_join = cursor.fetchall()
-            if testes_join:
-                for idx, tj in enumerate(testes_join):
-                    print(f"   Match {idx+1} -> Código: [{tj[0]}] | Preço: [R$ {tj[1]:.2f}] | {tj[2][:40]}...")
-            else:
-                print("   ⚠️ O CRUZAMENTO (JOIN) NÃO RETORNOU NENHUM RESULTADO PARA 'ALVENARIA'!")
-            print("----------------------------------------------------------------")
+            print("ROBÔ SINAPI: Base Relacional Nacional populada com códigos oficiais limpos!")
 
         else:
-            raise FileNotFoundError()
+            raise FileNotFoundError(f"Arquivo {nome_arquivo_local} não encontrado.")
     except Exception as e:
-        print(f"⚠️ [ERRO CRÍTICO NO LIFESPAN]: Falha no mapeamento plano: {str(e)}")
+        print(f"⚠️ [ERRO CRÍTICO NO LIFESPAN]: {str(e)}")
     finally:
         conn.close()
     yield
