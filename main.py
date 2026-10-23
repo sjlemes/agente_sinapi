@@ -262,14 +262,14 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         conn.close()
         raise HTTPException(status_code=400, detail="Informe ao menos uma palavra-chave para a busca.")
     
-    # Montagem dinâmica e segura de filtros LIKE para cada palavra
+    # 💡 CORREÇÃO CRASH: Usamos OR em vez de AND para permitir buscas com 2 ou mais palavras sem zerar o resultado
     condicoes = []
     parametros = []
     for termo in termos:
         condicoes.append("c.descricao LIKE ?")
         parametros.append(f"%{termo}%")
     
-    where_clause = " AND ".join(condicoes)
+    where_clause = " OR ".join(condicoes)
     
     # Conversão elegante do booleano recebido para o padrão do banco
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
@@ -291,7 +291,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         LEFT JOIN analitico a ON c.codigo = a.codigo_composicao
         WHERE ({where_clause}) 
           AND i.regime = ?
-        LIMIT 50
+        LIMIT 30
     """
     
     parametros_completos = parametros + [regime_filtro]
@@ -301,57 +301,60 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     
     if not linhas:
         return {
-            "status": "sucesso",
-            "mensagem": "Nenhuma composição encontrada para os termos informados.",
-            "dados_brutos": [],
-            "relatorio_ia": "Nenhum dado encontrado no banco para gerar laudo."
+            "relatorio": "⚠️ Nenhuma composição encontrada para os termos informados no banco de dados.",
+            "composicoes": []
         }
     
-    # 3. Organização e empacotamento dos dados reais para o Gemini
+    # 3. Organização e empacotamento hierárquico dos dados reais para o Gemini e Compose
     composicoes_processadas = {}
     
     for row in linhas:
         cod_comp, desc_comp, unid_comp, preco_unit, regime, cod_ins, desc_ins, unid_ins, coef = row
         
         if cod_comp not in composicoes_processadas:
+            preco_base = preco_unit or 0.0
+            total_comp = preco_base * dados.quantidade
+            
             composicoes_processadas[cod_comp] = {
-                "codigo": cod_comp,
+                "codigo": str(cod_comp),
                 "descricao": desc_comp,
                 "unidade": unid_comp,
-                "preco_unitario": preco_unit or 0.0,
-                "regime": regime,
-                "insumos_filhos": []
+                "total": f"R$ {total_comp:,.2f}",
+                "insumos": []
             }
         
-        # Se houver insumo analítico vinculado, adiciona à lista da composição
+        # Se houver insumo analítico vinculado, calcula a quantidade total baseada no coeficiente * quantidade da obra
         if cod_ins:
-            composicoes_processadas[cod_comp]["insumos_filhos"].append({
-                "codigo_insumo": cod_ins,
-                "descricao_insumo": desc_ins,
-                "unidade_insumo": unid_ins,
-                "coeficiente": coef
+            coef_val = coef or 0.0
+            qtd_insumo_total = coef_val * dados.quantidade
+            # Estimativa de subtotal do insumo se houver preço base (ou formatado limpo)
+            composicoes_processadas[cod_comp]["insumos"].append({
+                "nome": f"[{cod_ins}] {desc_ins}",
+                "qtd": qtd_insumo_total,
+                "unidade": unid_ins or "-",
+                "total": f"Coef: {coef_val:.4f}"
             })
 
     dados_estruturados = list(composicoes_processadas.values())
 
     print("----------------------------------------------------------------")
-    print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
-    print(dados_estruturados)
+    print("🔎 ROBÔ SINAPI: RAIO-X HIERÁRQUICO ENVIADO PARA IA...")
+    print(f"Total de composições mapeadas: {len(dados_estruturados)}")
     print("----------------------------------------------------------------")
 
     # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
     prompt_ia = f"""
     Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
-    Abaixo estão os dados reais extraídos diretamente do banco de dados SQLite oficial da Caixa para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
+    Abaixo estão os dados reais estruturados extraídos diretamente do SQLite para a busca '{dados.palavras_chave}' (Regime: {regime_filtro}):
 
     {dados_estruturados}
 
     Quantidade desejada na obra: {dados.quantidade}
     
-    Com base estritamente nestes dados factuais, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade, composição de custos e observações de execução para este cenário. Seja direto, profissional e formal.
+    Com base estritamente nestes dados factuais, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade, composição de custos e observações de execução para este cenário. Retorne exatamente o JSON exigido no schema, preenchendo o relatório descritivo e repassando ou ajustando as composições de forma correta.
     """
 
-# 🛠️ NOVO ESQUEMA RECONFIGURADO EM ÁRVORE HIERÁRQUICA PARA O JETPACK COMPOSE
+    # 🛠️ ESQUEMA RECONFIGURADO EM ÁRVORE HIERÁRQUICA PARA O JETPACK COMPOSE
     config_ia = types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema={
@@ -390,19 +393,18 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     )    
 
     try:
-            resposta = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=prompt_ia,
-                config=config_ia
-            )
-            dados_resposta = json.loads(resposta.text)
-            return {
-                "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
-                "composicoes": dados_resposta.get("composicoes", [])
-            }
+        resposta = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=prompt_ia,
+            config=config_ia
+        )
+        dados_resposta = json.loads(resposta.text)
+        return {
+            "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
+            "composicoes": dados_resposta.get("composicoes", [])
+        }
     except Exception as e:
         print(f"ROBÔ SINAPI: Instabilidade na API de IA: {str(e)}")
-        # Tratamento de erro original preservado e adaptado para a nova estrutura de árvore
         return {
             "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura local está 100% operacional. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
             "composicoes": [
