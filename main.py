@@ -336,6 +336,11 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     # Converte o dicionário organizado em lista para o payload e para o prompt da IA
     dados_estruturados = list(composicoes_processadas.values())
 
+    print("----------------------------------------------------------------")
+    print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
+    print(dados_estruturados)
+    print("----------------------------------------------------------------")
+
     # 4. Geração do Parecer Técnico com o Gemini (Engenheiro Consultor)
     prompt_ia = f"""
     Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
@@ -393,6 +398,17 @@ async def calcular_orcamento(dados: OrcamentoRequest):
             config=config_ia
         )
         dados_resposta = json.loads(resposta.text)
+
+
+
+        print("----------------------------------------------------------------")
+        print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
+        print(resposta.text)
+        print("----------------------------------------------------------------")
+
+
+
+
         return {
             "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
             "composicoes": dados_resposta.get("composicoes", [])
