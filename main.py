@@ -334,6 +334,11 @@ async def calcular_orcamento(dados: OrcamentoRequest):
 
     dados_estruturados = list(composicoes_processadas.values())
 
+    print("----------------------------------------------------------------")
+    print("🔎 ROBÔ SINAPI: RAIO-X ALUCINAÇÃO IA...")
+    print(dados_estruturados)
+    print("----------------------------------------------------------------")
+
     # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
     prompt_ia = f"""
     Você é um Engenheiro Civil Sênior especialista em orçamentação de obras públicas e tabelas SINAPI.
@@ -346,19 +351,67 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     Com base estritamente nestes dados factuais, elabore um parecer analítico descritivo, técnico e contextualizado sobre a viabilidade, composição de custos e observações de execução para este cenário. Seja direto, profissional e formal.
     """
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt_ia
-        )
-        relatorio_ia = response.text
-    except Exception as e:
-        relatorio_ia = f"Erro ao gerar parecer com a IA: {str(e)}"
+# 🛠️ NOVO ESQUEMA RECONFIGURADO EM ÁRVORE HIERÁRQUICA PARA O JETPACK COMPOSE
+    config_ia = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "properties": {
+                "relatorio": {"type": "STRING"},
+                "composicoes": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "codigo": {"type": "STRING"},
+                            "descricao": {"type": "STRING"},
+                            "unidade": {"type": "STRING"},
+                            "total": {"type": "STRING"},
+                            "insumos": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "nome": {"type": "STRING"},
+                                        "qtd": {"type": "NUMBER"},
+                                        "unidade": {"type": "STRING"},
+                                        "total": {"type": "STRING"}
+                                    },
+                                    "required": ["nome", "qtd", "unidade", "total"]
+                                }
+                            }
+                        },
+                        "required": ["codigo", "descricao", "unidade", "total", "insumos"]
+                    }
+                }
+            },
+            "required": ["relatorio", "composicoes"]
+        }
+    )    
 
-    return {
-        "status": "sucesso",
-        "quantidade_solicitada": dados.quantidade,
-        "regime": regime_filtro,
-        "dados_brutos": dados_estruturados,
-        "relatorio_ia": relatorio_ia
-    }
+    try:
+            resposta = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt_ia,
+                config=config_ia
+            )
+            dados_resposta = json.loads(resposta.text)
+            return {
+                "relatorio": dados_resposta.get("relatorio", "Orçamento calculado com sucesso."),
+                "composicoes": dados_resposta.get("composicoes", [])
+            }
+    except Exception as e:
+        print(f"ROBÔ SINAPI: Instabilidade na API de IA: {str(e)}")
+        # Tratamento de erro original preservado e adaptado para a nova estrutura de árvore
+        return {
+            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura local está 100% operacional. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
+            "composicoes": [
+                {
+                    "codigo": "ERRO",
+                    "descricao": "Servidor do Google Ocupado",
+                    "unidade": "Erro",
+                    "total": "Tente de Novo",
+                    "insumos": []
+                }
+            ]
+        }
