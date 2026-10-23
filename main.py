@@ -178,40 +178,48 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     cursor = conn.cursor()
     
     # 1. Tratamento seguro das palavras-chave para busca flexível por múltiplos termos
+    # 1. Tratamento seguro das palavras-chave
     termos = dados.palavras_chave.strip().split()
     if not termos:
         conn.close()
         raise HTTPException(status_code=400, detail="Informe ao menos uma palavra-chave para a busca.")
     
-    # 💡 CORREÇÃO CRASH: Usamos OR em vez de AND para permitir buscas com 2 ou mais palavras sem zerar o resultado
-    condicoes = []
-    parametros = []
-    for termo in termos:
-        condicoes.append("c.descricao LIKE ?")
-        parametros.append(f"%{termo}%")
+    palavras = [p.upper().strip() for p in termos if p.strip()]
     
+    # Montagem dinâmica dos filtros LIKE
+    condicoes = [f"c.descricao LIKE ?" for _ in palavras]
     where_clause = " OR ".join(condicoes)
     
-    # Conversão elegante do booleano recebido para o padrão do banco
+    # 🎯 SISTEMA DE PONTUAÇÃO: Conta quantas palavras da busca a descrição possui
+    score_parts = [f"CASE WHEN c.descricao LIKE ? THEN 1 ELSE 0 END" for _ in palavras]
+    score_expression = " + ".join(score_parts)
+    
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
-    # 2. Consulta SQL Otimizada com GROUP BY: Garante 20 composições ÚNICAS diferentes
+    # 2. Consulta SQL Inteligente: Filtra preços válidos e ordena pelos mais relevantes primeiro
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
             c.descricao AS desc_comp, 
             c.unidade AS unid_comp,
             i.preco_unitario,
-            i.regime
+            i.regime,
+            ({score_expression}) AS relevancia
         FROM composicoes c
         JOIN insumos i ON c.codigo = i.codigo
         WHERE ({where_clause}) 
           AND i.regime = ?
+          AND i.preco_unitario > 0
         GROUP BY c.codigo
+        ORDER BY relevancia DESC, c.descricao ASC
         LIMIT 20
     """
     
-    parametros_completos = parametros + [regime_filtro]
+    # Organização estrita dos parâmetros para a Query (WHERE + SCORE + REGIME)
+    parametros_where = [f"%{p}%" for p in palavras]
+    parametros_score = [f"%{p}%" for p in palavras]
+    parametros_completos = parametros_where + parametros_score + [regime_filtro]
+    
     cursor.execute(query, parametros_completos)
     linhas = cursor.fetchall()
     conn.close()
