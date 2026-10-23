@@ -195,7 +195,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     # Conversão elegante do booleano recebido para o padrão do banco
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
-    # 2. Consulta SQL Otimizada: Busca focada apenas nas composições e preços (LIMIT real por composição)
+    # 2. Consulta SQL Otimizada com GROUP BY: Garante 20 composições ÚNICAS diferentes
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
@@ -207,6 +207,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         JOIN insumos i ON c.codigo = i.codigo
         WHERE ({where_clause}) 
           AND i.regime = ?
+        GROUP BY c.codigo
         LIMIT 20
     """
     
