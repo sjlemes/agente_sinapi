@@ -28,44 +28,9 @@ class OrcamentoRequest(BaseModel):
     quantidade: float
     desonerado: bool  # True para Desonerado, False para Não Desonerado
 
-import re
-import pandas as pd
-import sqlite3
-import os
-from contextlib import asynccontextmanager
-
-def extrair_codigo_limpo(celula_valor) -> str:
-    """Extrai o código oficial limpo de uma célula do Excel,
-    removendo fórmulas de HIPERLINK e padronizando estritamente para dígitos.
-    """
-    if celula_valor is None:
-        return ""
-    
-    val_str = str(celula_valor).strip()
-    
-    # Se a célula contém uma fórmula de hiperlink (ex: =HIPERLINK("...", "12345"))
-    if val_str.startswith("="):
-        match_hiperlink = re.search(r'HIPERLINK\s*\([^,;]+[,;]\s*["\']?([^"\']+)["\']?\)', val_str, re.IGNORECASE)
-        if match_hiperlink:
-            val_str = match_hiperlink.group(1).strip()
-        else:
-            # Fallback: pega o último trecho entre aspas da fórmula
-            textos_aspas = re.findall(r'"([^"]+)"', val_str)
-            if textos_aspas:
-                val_str = textos_aspas[-1].strip()
-
-    # Remove ponto zero caso tenha vindo como float (ex: "12345.0")
-    if val_str.endswith(".0"):
-        val_str = val_str[:-2]
-
-    # Isola estritamente os dígitos do código oficial da Caixa
-    val_codigo = "".join(filter(str.isdigit, val_str))
-    return val_codigo
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite definitivo com Regex...")
+    print("ROBÔ SINAPI: Inicializando Banco Relacional SQLite definitivo (Versão Limpa)...")
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
@@ -102,10 +67,10 @@ async def lifespan(app: FastAPI):
                 if nome_aba_upper in ["MENU", "BUSCA", "LEIAME", "INSTRUÇÕES"]:
                     continue
 
-                # 🧱 1. LEITURA PLANA POR COORDENADAS FIXAS REAL DA CAIXA
+                # 🧱 1. LEITURA PLANA POR COORDENADAS FIXAS
                 if nome_aba_upper in ["CSD", "CCD", "ISD", "ICD"]:
                     regime_aba = "DESONERADO" if "CD" in nome_aba_upper or "IC" in nome_aba_upper else "NÃO DESONERADO"
-                    print(f"ROBÔ SINAPI: Devorando aba [{nome_aba}] com limpeza de hiperlinks...")
+                    print(f"ROBÔ SINAPI: Devorando aba [{nome_aba}]...")
                     
                     df = pd.read_excel(
                         nome_arquivo_local, 
@@ -122,9 +87,11 @@ async def lifespan(app: FastAPI):
                             if desc_bruta and desc_bruta not in ["DESCRIÇÃO", "DESCRIÇÃO DA COMPOSIÇÃO", "NONE", "NAN"]:
                                 unid_val = str(linha.values[3]).upper().strip() if pd.notna(linha.values[3]) else "-"
                                 
-                                # 🚨 APLICANDO A FUNÇÃO DE LIMPEZA ROBUSTA DE CÓDIGOS
-                                celula_codigo = linha.values[1]
-                                val_codigo = extrair_codigo_limpo(celula_codigo)
+                                # Extração direta e limpa do código oficial da planilha
+                                celula_codigo = str(linha.values[1]).strip() if pd.notna(linha.values[1]) else ""
+                                if celula_codigo.endswith(".0"):
+                                    celula_codigo = celula_codigo[:-2]
+                                val_codigo = "".join(filter(str.isdigit, celula_codigo))
                                 
                                 if not val_codigo or len(val_codigo) < 3:
                                     val_codigo = str(abs(hash(desc_bruta)))[:6]
@@ -148,9 +115,9 @@ async def lifespan(app: FastAPI):
                                         VALUES (?, ?, ?, ?, ?, ?)
                                     """, ("NACIONAL", val_codigo, desc_bruta, unid_val, preco, regime_aba))
 
-                # 🧱 2. PROCESSAMENTO INTELIGENTE DA ABA ANALÍTICO COM LIMPEZA DE CÓDIGOS
+                # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
-                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna com limpeza de códigos...")
+                    print("ROBÔ SINAPI: Mapeando estrutura analítica interna...")
                     df_ana = pd.read_excel(nome_arquivo_local, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
                     
                     df_ana.columns = [str(c).replace("\n", " ").replace("\r", " ").strip().upper() for c in df_ana.columns]
@@ -163,9 +130,14 @@ async def lifespan(app: FastAPI):
                     
                     if col_comp and col_item:
                         for _, linha in df_ana.iterrows():
-                            # 🚨 APLICANDO A FUNÇÃO DE LIMPEZA NA ABA ANALÍTICA
-                            val_comp = extrair_codigo_limpo(linha[col_comp])
-                            val_item = extrair_codigo_limpo(linha[col_item])
+                            # Extração e limpeza direta dos códigos pai e filho
+                            raw_comp = str(linha[col_comp]).strip() if pd.notna(linha[col_comp]) else ""
+                            if raw_comp.endswith(".0"): raw_comp = raw_comp[:-2]
+                            val_comp = "".join(filter(str.isdigit, raw_comp))
+                            
+                            raw_item = str(linha[col_item]).strip() if pd.notna(linha[col_item]) else ""
+                            if raw_item.endswith(".0"): raw_item = raw_item[:-2]
+                            val_item = "".join(filter(str.isdigit, raw_item))
                             
                             if val_comp and val_item:
                                 desc_ins = str(linha[col_desc_item]).upper().strip() if col_desc_item and pd.notna(linha[col_desc_item]) else ""
@@ -184,7 +156,7 @@ async def lifespan(app: FastAPI):
                                 """, (val_comp, val_item, desc_ins, unid_ins, coef))
             
             conn.commit()
-            print("ROBÔ SINAPI: Base Relacional Nacional populada com códigos oficiais limpos!")
+            print("ROBÔ SINAPI: Base Relacional Nacional populada com sucesso (Sem redundâncias)!")
 
         else:
             raise FileNotFoundError(f"Arquivo {nome_arquivo_local} não encontrado.")
