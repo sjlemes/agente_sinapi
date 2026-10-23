@@ -34,9 +34,14 @@ async def lifespan(app: FastAPI):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
+    #cursor.execute("""
+        #CREATE TABLE IF NOT EXISTS composicoes (
+            #id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT UNIQUE, descricao TEXT, unidade TEXT
+        #)
+    #""")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS composicoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT UNIQUE, descricao TEXT, unidade TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, descricao TEXT, unidade TEXT
         )
     """)
     cursor.execute("""
@@ -196,7 +201,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
-    # 2. Consulta SQL Inteligente: Filtra preços válidos e ordena pelos mais relevantes primeiro
+    # 2. Consulta SQL Inteligente: Pega apenas a versão mais recente (MAX(id)), filtra preços válidos e ordena por relevância
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
@@ -210,7 +215,9 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         WHERE ({where_clause}) 
           AND i.regime = ?
           AND i.preco_unitario > 0
-        GROUP BY c.codigo
+          AND c.id IN (
+              SELECT MAX(id) FROM composicoes GROUP BY codigo
+          )
         ORDER BY relevancia DESC, c.descricao ASC
         LIMIT 20
     """
