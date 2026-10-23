@@ -195,24 +195,19 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     # Conversão elegante do booleano recebido para o padrão do banco
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
-    # 2. Consulta SQL Cruzada: Composições + Preços Regionais/Estado + Insumos da Tabela Analítica
+    # 2. Consulta SQL Otimizada: Busca focada apenas nas composições e preços (LIMIT real por composição)
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
             c.descricao AS desc_comp, 
             c.unidade AS unid_comp,
             i.preco_unitario,
-            i.regime,
-            a.codigo_insumo,
-            a.descricao_insumo,
-            a.unidade_insumo,
-            a.coeficiente
+            i.regime
         FROM composicoes c
         JOIN insumos i ON c.codigo = i.codigo
-        LEFT JOIN analitico a ON c.codigo = a.codigo_composicao
         WHERE ({where_clause}) 
           AND i.regime = ?
-        LIMIT 30
+        LIMIT 20
     """
     
     parametros_completos = parametros + [regime_filtro]
@@ -225,8 +220,8 @@ async def calcular_orcamento(dados: OrcamentoRequest):
             "relatorio": "⚠️ Nenhuma composição encontrada para os termos informados no banco de dados.",
             "composicoes": []
         }
-
-    # 3. Organização e empacotamento hierárquico dos dados reais para o Gemini e Compose
+    
+    # 3. Organização limpa das composições encontradas
     composicoes_processadas = {}
     codigos_encontrados = []
     
@@ -246,7 +241,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
             }
             codigos_encontrados.append(str(cod_comp))
 
-    # 🔍 BUSCA COMPLEMENTAR SEGURA DOS INSUMOS FILHOS NA TABELA ANALITICO
+    # 🔍 BUSCA COMPLEMENTAR SEGURA DOS INSUMOS FILHOS NA TABELA ANALITICO PARA TODAS AS COMPOSIÇÕES
     if codigos_encontrados:
         conn_ana = sqlite3.connect("sinapi.db")
         cursor_ana = conn_ana.cursor()
