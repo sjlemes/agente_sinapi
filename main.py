@@ -340,6 +340,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     print("----------------------------------------------------------------")
     print("🔎 ROBÔ SINAPI: RAIO-X HIERÁRQUICO ENVIADO PARA IA...")
     print(f"Total de composições mapeadas: {len(dados_estruturados)}")
+    print(dados_estruturados)
     print("----------------------------------------------------------------")
 
     # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
