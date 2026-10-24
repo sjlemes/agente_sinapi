@@ -34,14 +34,9 @@ async def lifespan(app: FastAPI):
     conn = sqlite3.connect("sinapi.db")
     cursor = conn.cursor()
     
-    #cursor.execute("""
-        #CREATE TABLE IF NOT EXISTS composicoes (
-            #id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT UNIQUE, descricao TEXT, unidade TEXT
-        #)
-    #""")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS composicoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT, descricao TEXT, unidade TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT, codigo TEXT UNIQUE, descricao TEXT, unidade TEXT
         )
     """)
     cursor.execute("""
@@ -201,8 +196,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     
     regime_filtro = "DESONERADO" if dados.desonerado else "NÃO DESONERADO"
     
-    # 2. Consulta SQL Inteligente: Pega apenas a versão mais recente (MAX(id)), filtra preços válidos e ordena por relevância
-    # 2. Consulta SQL Refinada: Garante até 20 composições únicas, mais recentes, com preço válido e ordenadas por relevância
+    # 2. Consulta SQL Inteligente: Filtra preços válidos e ordena pelos mais relevantes primeiro
     query = f"""
         SELECT 
             c.codigo AS codigo_comp, 
@@ -216,24 +210,18 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         WHERE ({where_clause}) 
           AND i.regime = ?
           AND i.preco_unitario > 0
-          AND c.id IN (
-              SELECT MAX(id) FROM composicoes GROUP BY codigo
-          )
         GROUP BY c.codigo
         ORDER BY relevancia DESC, c.descricao ASC
         LIMIT 20
     """
     
+    # Organização estrita dos parâmetros para a Query (WHERE + SCORE + REGIME)
     parametros_where = [f"%{p}%" for p in palavras]
     parametros_score = [f"%{p}%" for p in palavras]
     parametros_completos = parametros_where + parametros_score + [regime_filtro]
     
     cursor.execute(query, parametros_completos)
     linhas = cursor.fetchall()
-    
-    # 🔎 Log de diagnóstico para sabermos exatamente quantas linhas o SQLite encontrou
-    print(f"🔎 DEBUG SQL: Linhas cruas retornadas pelo banco: {len(linhas)}")
-    
     conn.close()
     
     if not linhas:
