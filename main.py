@@ -362,12 +362,12 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                 "unidade": item["unidade"],
                 "total": item["total"],
                 "insumos": [
-                    {
-                        "nome": ins["nome"],
-                        "qtd": ins["qtd"],
-                        "unidade": ins["unidade"],
-                        "total": ins["total"]
-                    } for ins in item["insumos"]
+                    #{
+                        #"nome": ins["nome"],
+                        #"qtd": ins["qtd"],
+                        #"unidade": ins["unidade"],
+                        #"total": ins["total"]
+                    #} for ins in item["insumos"]
                 ]
             })
 
