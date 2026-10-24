@@ -212,7 +212,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
           AND i.preco_unitario > 0
         GROUP BY c.codigo
         ORDER BY relevancia DESC, c.descricao ASC
-        LIMIT 20
+        LIMIT 6
     """
     
     # Organização estrita dos parâmetros para a Query (WHERE + SCORE + REGIME)
