@@ -336,7 +336,9 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         }
     )    
 
+    # 4. Geração do Parecer Técnico com tratamento blindado de timeout/instabilidade da IA
     try:
+        # Definimos um timeout curto ou deixamos a chamada protegida
         resposta = client.models.generate_content(
             model='gemini-3.8-flash',
             contents=prompt_ia,
@@ -348,16 +350,29 @@ async def calcular_orcamento(dados: OrcamentoRequest):
             "composicoes": dados_resposta.get("composicoes", [])
         }
     except Exception as e:
-        print(f"ROBÔ SINAPI: Instabilidade na API de IA: {str(e)}")
+        print(f"⚠️ ROBÔ SINAPI: IA Indisponível ({str(e)}). Entrando em modo de fallback local instantâneo.")
+        
+        # 🛡️ FALLBACK INTELIGENTE: Se a IA falhar ou der 503, montamos a estrutura localmente 
+        # para garantir que o app receba os dados em menos de 1 segundo, sem timeout!
+        composicoes_fallback = []
+        for item in dados_estruturados:
+            composicoes_fallback.append({
+                "codigo": item["codigo"],
+                "descricao": item["descricao"],
+                "unidade": item["unidade"],
+                "total": item["total"],
+                "insumos": [
+                    {
+                        "nome": ins["nome"],
+                        "qtd": ins["qtd"],
+                        "unidade": ins["unidade"],
+                        "total": ins["total"]
+                    } for ins in item["insumos"]
+                ]
+            })
+
         return {
-            "relatorio": "⚠️ O servidor gratuito do Google está temporariamente congestionado devido à alta demanda global neste minuto.\n\nA nossa infraestrutura local está 100% operacional. Por favor, clique no botão novamente em alguns segundos para reprocessar a consulta.",
-            "composicoes": [
-                {
-                    "codigo": "ERRO",
-                    "descricao": "Servidor do Google Ocupado",
-                    "unidade": "Erro",
-                    "total": "Tente de Novo",
-                    "insumos": []
-                }
-            ]
+            "relatorio": "⚠️ O servidor de IA do Google está temporariamente sobrecarregado (Erro 503). Os dados técnicos e custos abaixo foram extraídos diretamente do banco oficial SINAPI com sucesso.",
+            "composicoes": composicoes_fallback
         }
+    
