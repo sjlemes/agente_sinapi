@@ -284,6 +284,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     print(f"Total de composições mapeadas: {len(dados_estruturados)}")
     for item in dados_estruturados:
         print(f"   -> Comp: {item['codigo']} | Insumos filhos encontrados: {len(item['insumos'])}")
+    print(dados_estruturados)   
     print("----------------------------------------------------------------")
 
     # 4. Geração do Parecer Técnico com a nova SDK do Gemini (`client.models.generate_content`)
@@ -362,12 +363,12 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                 "unidade": item["unidade"],
                 "total": item["total"],
                 "insumos": [
-                    #{
-                        #"nome": ins["nome"],
-                        #"qtd": ins["qtd"],
-                        #"unidade": ins["unidade"],
-                        #"total": ins["total"]
-                    #} for ins in item["insumos"]
+                    {
+                        "nome": ins["nome"],
+                        "qtd": ins["qtd"],
+                        "unidade": ins["unidade"],
+                        "total": ins["total"]
+                    } for ins in item["insumos"]
                 ]
             })
 
