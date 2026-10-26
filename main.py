@@ -254,19 +254,24 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         conn_ana = sqlite3.connect("sinapi.db")
         cursor_ana = conn_ana.cursor()
         
-        # 🔍 Descobre todas as colunas da tabela analitico
-        cursor_ana.execute("PRAGMA table_info(analitico);")
-        colunas_info = [col[1] for col in cursor_ana.fetchall()]
-        print(f"🔎 COLUNAS REAIS DA TABELA ANALITICO: {colunas_info}")
-        
         placeholders = ",".join(["?"] * len(codigos_encontrados))
         codigos_str = [str(c).strip() for c in codigos_encontrados]
         
-        # Pega a primeira linha inteira da tabela analitico para vermos os dados brutos de todas as colunas
-        cursor_ana.execute(f"SELECT * FROM analitico WHERE TRIM(CAST(codigo_composicao AS TEXT)) IN ({placeholders}) LIMIT 1", codigos_str)
-        exemplo_linha = cursor_ana.fetchone()
-        print(f"🔎 EXEMPLO DE LINHA BRUTA NA ANALITICO: {exemplo_linha}")
+        # Vamos buscar linhas onde o código do insumo É DIFERENTE do código da composição
+        query_diag = f"""
+            SELECT codigo_composicao, codigo_insumo, descricao_insumo, coeficiente
+            FROM analitico
+            WHERE TRIM(CAST(codigo_composicao AS TEXT)) IN ({placeholders})
+              AND TRIM(CAST(codigo_insumo AS TEXT)) != TRIM(CAST(codigo_composicao AS TEXT))
+            LIMIT 5
+        """
         
+        cursor_ana.execute(query_diag, codigos_str)
+        linhas_diferentes = cursor_ana.fetchall()
+        print(f"🔎 LINHAS ONDE INSUMO != COMPOSICAO: {len(linhas_diferentes)}")
+        for linha in linhas_diferentes:
+            print(f"   -> Comp: {linha[0]} | Insumo: {linha[1]} | Desc: {linha[2]} | Coef: {linha[3]}")
+            
         conn_ana.close()
 
     dados_estruturados = list(composicoes_processadas.values())
