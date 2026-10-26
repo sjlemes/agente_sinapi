@@ -115,38 +115,38 @@ async def lifespan(app: FastAPI):
                                         VALUES (?, ?, ?, ?, ?, ?)
                                     """, ("NACIONAL", val_codigo, desc_bruta, unid_val, preco, regime_aba))
 
-                # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO
+                # 🧱 2. PROCESSAMENTO DA ABA ANALÍTICO (CORRIGIDO POR ÍNDICES FIXOS)
                 elif nome_aba_upper in ["ANALÍTICO", "ANALITICO"]:
                     print("ROBÔ SINAPI: Mapeando estrutura analítica interna...")
-                    df_ana = pd.read_excel(nome_arquivo_local, sheet_name=nome_aba, skiprows=9, engine="openpyxl")
+                    df_ana = pd.read_excel(
+                        nome_arquivo_local, 
+                        sheet_name=nome_aba, 
+                        skiprows=9, 
+                        engine="openpyxl",
+                        engine_kwargs={"data_only": True, "read_only": True}
+                    )
                     
-                    df_ana.columns = [str(c).replace("\n", " ").replace("\r", " ").strip().upper() for c in df_ana.columns]
-                    
-                    col_comp = next((c for c in df_ana.columns if "COMPOSIÇÃO" in c or "COMPOSICAO" in c), None)
-                    col_item = next((c for c in df_ana.columns if "ITEM" in c or "INSUMO" in c or "CÓDIGO" in c), None)
-                    col_desc_item = next((c for c in df_ana.columns if "DESCRIÇÃO" in c or "DESCRICAO" in c), None)
-                    col_unid_item = next((c for c in df_ana.columns if "UNIDADE" in c), None)
-                    col_coef = next((c for c in df_ana.columns if "COEFICIENTE" in c or "QUANTIDADE" in c), None)
-                    
-                    if col_comp and col_item:
-                        for _, linha in df_ana.iterrows():
-                            # Extração e limpeza direta dos códigos pai e filho
-                            raw_comp = str(linha[col_comp]).strip() if pd.notna(linha[col_comp]) else ""
+                    for _, linha in df_ana.iterrows():
+                        if len(linha) >= 7:
+                            # Coluna de Composição (geralmente índice 1) e Coluna de Item/Insumo (geralmente índice 3)
+                            raw_comp = str(linha.values[1]).strip() if pd.notna(linha.values[1]) else ""
                             if raw_comp.endswith(".0"): raw_comp = raw_comp[:-2]
                             val_comp = "".join(filter(str.isdigit, raw_comp))
                             
-                            raw_item = str(linha[col_item]).strip() if pd.notna(linha[col_item]) else ""
+                            raw_item = str(linha.values[3]).strip() if pd.notna(linha.values[3]) else ""
                             if raw_item.endswith(".0"): raw_item = raw_item[:-2]
                             val_item = "".join(filter(str.isdigit, raw_item))
                             
                             if val_comp and val_item:
-                                desc_ins = str(linha[col_desc_item]).upper().strip() if col_desc_item and pd.notna(linha[col_desc_item]) else ""
-                                unid_ins = str(linha[col_unid_item]).upper().strip() if col_unid_item and pd.notna(linha[col_unid_item]) else "-"
+                                desc_ins = str(linha.values[4]).upper().strip() if pd.notna(linha.values[4]) else ""
+                                unid_ins = str(linha.values[5]).upper().strip() if pd.notna(linha.values[5]) else "-"
                                 
                                 coef = 0.0
                                 try:
-                                    if col_coef and pd.notna(linha[col_coef]):
-                                        coef = float(linha[col_coef])
+                                    if pd.notna(linha.values[6]):
+                                        # Trata caso o coeficiente venha como string com vírgula (ex: "1,2790")
+                                        val_coef_str = str(linha.values[6]).strip().replace(",", ".")
+                                        coef = float(val_coef_str)
                                 except:
                                     coef = 0.0
                                     
@@ -154,7 +154,6 @@ async def lifespan(app: FastAPI):
                                     INSERT INTO analitico (codigo_composicao, codigo_insumo, descricao_insumo, unidade_insumo, coeficiente)
                                     VALUES (?, ?, ?, ?, ?)
                                 """, (val_comp, val_item, desc_ins, unid_ins, coef))
-            
             conn.commit()
             print("ROBÔ SINAPI: Base Relacional Nacional populada com sucesso (Sem redundâncias)!")
 
