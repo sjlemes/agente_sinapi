@@ -256,40 +256,48 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         
         placeholders = ",".join(["?"] * len(codigos_encontrados))
         
-        # 1. Busca limpa e direta na tabela analitico (sem JOINs complexos que possam falhar)
+        # Converte todos os códigos para string limpa para garantir compatibilidade
+        codigos_str = [str(c).strip() for c in codigos_encontrados]
+        
         query_ana = f"""
-            SELECT codigo_composicao, codigo_insumo, descricao_insumo, unidade_insumo, coeficiente
+            SELECT 
+                TRIM(CAST(codigo_composicao AS TEXT)) AS c_comp, 
+                TRIM(CAST(codigo_insumo AS TEXT)) AS c_ins, 
+                descricao_insumo, 
+                unidade_insumo, 
+                coeficiente
             FROM analitico
-            WHERE codigo_composicao IN ({placeholders})
+            WHERE TRIM(CAST(codigo_composicao AS TEXT)) IN ({placeholders})
         """
         
-        cursor_ana.execute(query_ana, codigos_encontrados)
+        cursor_ana.execute(query_ana, codigos_str)
         linhas_analiticas = cursor_ana.fetchall()
-
-        print(f"🔎 DEBUG ANALITICO: Total de linhas brutas encontradas na tabela analitico: {len(linhas_analiticas)}")
         
         for ana_row in linhas_analiticas:
             c_comp, c_ins, d_ins, u_ins, coef = ana_row
+            c_comp = str(c_comp).strip()
+            c_ins = str(c_ins).strip()
             
-            # Evita que a composição se repita como insumo filho dela mesma
+            # 1. Elimina a duplicação: ignora se o insumo tiver o mesmo código da composição pai
             if c_ins == c_comp:
                 continue
                 
             if c_comp in composicoes_processadas:
-                coef_val = coef or 0.0
+                coef_val = float(coef or 0.0)
                 
-                # 2. Buscamos o preço unitário do insumo filho individualmente no banco
+                # Busca do preço unitário do insumo no regime selecionado
                 cursor_ana.execute(
-                    "SELECT preco_unitario FROM insumos WHERE codigo = ? AND regime = ? LIMIT 1",
+                    "SELECT preco_unitario FROM insumos WHERE TRIM(CAST(codigo AS TEXT)) = ? AND regime = ? LIMIT 1",
                     (c_ins, regime_filtro)
                 )
                 res_preco = cursor_ana.fetchone()
-                preco_val = res_preco[0] if res_preco and res_preco[0] else 0.0
+                preco_val = float(res_preco[0]) if res_preco and res_preco[0] else 0.0
                 
-                # 3. Cálculo matemático real (Coeficiente * Preço Unitário * Quantidade da Obra)
+                # 2. Cálculo do Custo Total do Componente (Coeficiente * Preço Unitário * Quantidade da Obra)
                 custo_total_componente = coef_val * preco_val * dados.quantidade
                 qtd_insumo_total = coef_val * dados.quantidade
                 
+                # 3. Anexação com valores e quantidades formatados em PT-BR
                 composicoes_processadas[c_comp]["insumos"].append({
                     "nome": f"[{c_ins}] {d_ins}" if d_ins else f"[{c_ins}] Insumo Vinculado",
                     "qtd": qtd_insumo_total,
@@ -401,5 +409,9 @@ async def calcular_orcamento(dados: OrcamentoRequest):
 
 # --- FORMATAÇÃO DE QTD E CUSTOS PARA FORMATO BR ---
 def formatar_brl(valor: float) -> str:
-    """Formata um float para o padrão monetário brasileiro (ex: R$ 1.234,56)"""
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")    
+        """Formata valor para a moeda brasileira (ex: R$ 1.234,56)"""
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def formatar_numero_br(valor: float) -> str:
+    """Formata quantidades numéricas para o padrão brasileiro (ex: 1.234,56)"""
+    return f"{valor:,.4f}".replace(",", "X").replace(".", ",").replace("X", ".").rstrip('0').rstrip(',')  
