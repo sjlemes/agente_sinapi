@@ -273,7 +273,10 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         
         cursor_ana.execute(query_ana, codigos_str)
         linhas_analiticas = cursor_ana.fetchall()
-        print(f"🔎 DEBUG ANALITICO FILTRADO: Total de insumos filhos reais encontrados: {len(linhas_analiticas)}")
+
+        # 🔎 LOGS DE RASTREIO DETALHADO
+        print(f"🔎 CHAVES EM composicoes_processadas: {list(composicoes_processadas.keys())}")
+        print(f"🔎 TOTAL DE LINHAS ANALITICAS: {len(linhas_analiticas)}")
         
         for ana_row in linhas_analiticas:
             c_comp, c_ins, d_ins, u_ins, coef = ana_row
