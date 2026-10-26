@@ -254,65 +254,19 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         conn_ana = sqlite3.connect("sinapi.db")
         cursor_ana = conn_ana.cursor()
         
+        # 🔍 Descobre todas as colunas da tabela analitico
+        cursor_ana.execute("PRAGMA table_info(analitico);")
+        colunas_info = [col[1] for col in cursor_ana.fetchall()]
+        print(f"🔎 COLUNAS REAIS DA TABELA ANALITICO: {colunas_info}")
+        
         placeholders = ",".join(["?"] * len(codigos_encontrados))
         codigos_str = [str(c).strip() for c in codigos_encontrados]
         
-        query_ana = f"""
-            SELECT 
-                TRIM(CAST(codigo_composicao AS TEXT)) AS c_comp, 
-                TRIM(CAST(codigo_insumo AS TEXT)) AS c_ins, 
-                descricao_insumo, 
-                unidade_insumo, 
-                coeficiente
-            FROM analitico
-            WHERE TRIM(CAST(codigo_composicao AS TEXT)) IN ({placeholders})
-              AND codigo_insumo IS NOT NULL 
-              AND TRIM(CAST(codigo_insumo AS TEXT)) != ''
-        """
+        # Pega a primeira linha inteira da tabela analitico para vermos os dados brutos de todas as colunas
+        cursor_ana.execute(f"SELECT * FROM analitico WHERE TRIM(CAST(codigo_composicao AS TEXT)) IN ({placeholders}) LIMIT 1", codigos_str)
+        exemplo_linha = cursor_ana.fetchone()
+        print(f"🔎 EXEMPLO DE LINHA BRUTA NA ANALITICO: {exemplo_linha}")
         
-        cursor_ana.execute(query_ana, codigos_str)
-        linhas_analiticas = cursor_ana.fetchall()
-        
-        print(f"🔎 Total de linhas brutas na analitico: {len(linhas_analiticas)}")
-        
-        for idx, ana_row in enumerate(linhas_analiticas):
-            c_comp, c_ins, d_ins, u_ins, coef = ana_row
-            c_comp = str(c_comp).strip()
-            c_ins = str(c_ins).strip()
-            
-            # Verificação de segurança
-            if not c_ins or c_ins == "None" or c_ins == c_comp:
-                print(f"[{idx}] ⏭️ Ignorado (vazio ou igual ao pai): comp={c_comp}, ins={c_ins}")
-                continue
-                
-            if c_comp in composicoes_processadas:
-                # Tratamento seguro do coeficiente (seja string com vírgula ou float)
-                if isinstance(coef, str):
-                    coef_val = float(coef.replace(',', '.'))
-                else:
-                    coef_val = float(coef or 0.0)
-                
-                # Busca o preço unitário
-                cursor_ana.execute(
-                    "SELECT preco_unitario FROM insumos WHERE TRIM(CAST(codigo AS TEXT)) = ? AND regime = ? LIMIT 1",
-                    (c_ins, regime_filtro)
-                )
-                res_preco = cursor_ana.fetchone()
-                preco_val = float(res_preco[0]) if res_preco and res_preco[0] else 0.0
-                
-                custo_total_componente = coef_val * preco_val * dados.quantidade
-                qtd_insumo_total = coef_val * dados.quantidade
-                
-                composicoes_processadas[c_comp]["insumos"].append({
-                    "nome": f"[{c_ins}] {d_ins}" if d_ins else f"[{c_ins}] Insumo Vinculado",
-                    "qtd": qtd_insumo_total,
-                    "unidade": u_ins or "-",
-                    "total": formatar_brl(custo_total_componente)
-                })
-                print(f"[{idx}] ✅ Sucesso! Insumo {c_ins} adicionado à composição {c_comp}")
-            else:
-                print(f"[{idx}] ⚠️ A chave '{c_comp}' não foi encontrada em composicoes_processadas.")
-                
         conn_ana.close()
 
     dados_estruturados = list(composicoes_processadas.values())
