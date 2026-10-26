@@ -272,33 +272,44 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         cursor_ana.execute(query_ana, codigos_str)
         linhas_analiticas = cursor_ana.fetchall()
         
-        print(f"🔎 Total de linhas brutas na analitico: {len(linhas_analiticas)}")
-        
-        for idx, ana_row in enumerate(linhas_analiticas):
+        for ana_row in linhas_analiticas:
             c_comp, c_ins, d_ins, u_ins, coef = ana_row
             c_comp = str(c_comp).strip()
             c_ins = str(c_ins).strip()
             
-            # Verificação de segurança
             if not c_ins or c_ins == "None" or c_ins == c_comp:
-                print(f"[{idx}] ⏭️ Ignorado (vazio ou igual ao pai): comp={c_comp}, ins={c_ins}")
                 continue
                 
             if c_comp in composicoes_processadas:
-                # Tratamento seguro do coeficiente (seja string com vírgula ou float)
                 if isinstance(coef, str):
                     coef_val = float(coef.replace(',', '.'))
                 else:
                     coef_val = float(coef or 0.0)
                 
-                # Busca o preço unitário
+                # 1. TENTA BUSCAR NA TABELA DE INSUMOS
                 cursor_ana.execute(
                     "SELECT preco_unitario FROM insumos WHERE TRIM(CAST(codigo AS TEXT)) = ? AND regime = ? LIMIT 1",
                     (c_ins, regime_filtro)
                 )
                 res_preco = cursor_ana.fetchone()
-                preco_val = float(res_preco[0]) if res_preco and res_preco[0] else 0.0
                 
+                preco_val = 0.0
+                if res_preco and res_preco[0]:
+                    preco_val = float(res_preco[0])
+                else:
+                    # 2. SE NÃO ESTÁ EM INSUMOS, BUSCA NA TABELA DE COMPOSICOES (Sub-composição)
+                    cursor_ana.execute(
+                        "SELECT preco_unitario FROM composicoes WHERE TRIM(CAST(codigo AS TEXT)) = ? LIMIT 1",
+                        (c_ins,)
+                    )
+                    res_comp = cursor_ana.fetchone()
+                    if res_comp and res_comp[0]:
+                        preco_val = float(res_comp[0])
+                    else:
+                        # Fallback: Se a tabela composicoes não tiver coluna preco_unitario, tenta buscar o total da composição pai se ela já foi calculada
+                        pass
+
+                # Cálculo exato do custo total do componente
                 custo_total_componente = coef_val * preco_val * dados.quantidade
                 qtd_insumo_total = coef_val * dados.quantidade
                 
@@ -308,9 +319,6 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                     "unidade": u_ins or "-",
                     "total": formatar_brl(custo_total_componente)
                 })
-                print(f"[{idx}] ✅ Sucesso! Insumo {c_ins} adicionado à composição {c_comp}")
-            else:
-                print(f"[{idx}] ⚠️ A chave '{c_comp}' não foi encontrada em composicoes_processadas.")
                 
         conn_ana.close()
 
