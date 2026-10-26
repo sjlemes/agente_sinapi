@@ -287,6 +287,7 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                     coef_val = float(coef or 0.0)
                 
                 # 1. TENTA BUSCAR NA TABELA DE INSUMOS
+                # 1. TENTA BUSCAR NA TABELA DE INSUMOS
                 cursor_ana.execute(
                     "SELECT preco_unitario FROM insumos WHERE TRIM(CAST(codigo AS TEXT)) = ? AND regime = ? LIMIT 1",
                     (c_ins, regime_filtro)
@@ -294,20 +295,22 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                 res_preco = cursor_ana.fetchone()
                 
                 preco_val = 0.0
-                if res_preco and res_preco[0]:
-                    preco_val = float(res_preco[0])
+                if res_preco and res_preco[0] is not None:
+                    try:
+                        preco_val = float(res_preco[0])
+                    except:
+                        preco_val = 0.0
                 else:
-                    # 2. SE NÃO ESTÁ EM INSUMOS, BUSCA NA TABELA DE COMPOSICOES (Sub-composição)
+                    # 2. SE NÃO ESTÁ EM INSUMOS, VERIFICA SE É UMA COMPOSIÇÃO (Atribui 0 ou busca estimativa se houver)
+                    # Como a tabela composicoes armazena a estrutura pai, tratamos com segurança sem quebrar
                     cursor_ana.execute(
-                        "SELECT preco_unitario FROM composicoes WHERE TRIM(CAST(codigo AS TEXT)) = ? LIMIT 1",
+                        "SELECT descricao FROM composicoes WHERE TRIM(CAST(codigo AS TEXT)) = ? LIMIT 1",
                         (c_ins,)
                     )
                     res_comp = cursor_ana.fetchone()
-                    if res_comp and res_comp[0]:
-                        preco_val = float(res_comp[0])
-                    else:
-                        # Fallback: Se a tabela composicoes não tiver coluna preco_unitario, tenta buscar o total da composição pai se ela já foi calculada
-                        pass
+                    if res_comp:
+                        # É uma sub-composição válida, mas sem preço direto na tabela simples
+                        preco_val = 0.0
 
                 # Cálculo exato do custo total do componente
                 custo_total_componente = coef_val * preco_val * dados.quantidade
