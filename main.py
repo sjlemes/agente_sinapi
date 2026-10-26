@@ -257,7 +257,6 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         placeholders = ",".join(["?"] * len(codigos_encontrados))
         codigos_str = [str(c).strip() for c in codigos_encontrados]
         
-        # 🎯 FILTRO CRUCIAL: Adicionamos a restrição para ignorar linhas onde o codigo_insumo é nulo ou vazio
         query_ana = f"""
             SELECT 
                 TRIM(CAST(codigo_composicao AS TEXT)) AS c_comp, 
@@ -273,24 +272,27 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         
         cursor_ana.execute(query_ana, codigos_str)
         linhas_analiticas = cursor_ana.fetchall()
-
-        # 🔎 LOGS DE RASTREIO DETALHADO
-        print(f"🔎 CHAVES EM composicoes_processadas: {list(composicoes_processadas.keys())}")
-        print(f"🔎 TOTAL DE LINHAS ANALITICAS: {len(linhas_analiticas)}")
         
-        for ana_row in linhas_analiticas:
+        print(f"🔎 Total de linhas brutas na analitico: {len(linhas_analiticas)}")
+        
+        for idx, ana_row in enumerate(linhas_analiticas):
             c_comp, c_ins, d_ins, u_ins, coef = ana_row
             c_comp = str(c_comp).strip()
             c_ins = str(c_ins).strip()
             
-            # Segurança extra: se vier vazio ou igual ao pai, pula
+            # Verificação de segurança
             if not c_ins or c_ins == "None" or c_ins == c_comp:
+                print(f"[{idx}] ⏭️ Ignorado (vazio ou igual ao pai): comp={c_comp}, ins={c_ins}")
                 continue
                 
             if c_comp in composicoes_processadas:
-                coef_val = float(coef or 0.0)
+                # Tratamento seguro do coeficiente (seja string com vírgula ou float)
+                if isinstance(coef, str):
+                    coef_val = float(coef.replace(',', '.'))
+                else:
+                    coef_val = float(coef or 0.0)
                 
-                # Busca o preço unitário do insumo filho na tabela de insumos
+                # Busca o preço unitário
                 cursor_ana.execute(
                     "SELECT preco_unitario FROM insumos WHERE TRIM(CAST(codigo AS TEXT)) = ? AND regime = ? LIMIT 1",
                     (c_ins, regime_filtro)
@@ -298,7 +300,6 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                 res_preco = cursor_ana.fetchone()
                 preco_val = float(res_preco[0]) if res_preco and res_preco[0] else 0.0
                 
-                # Cálculo do Custo Total do Componente (Coeficiente * Preço Unitário * Quantidade da Obra)
                 custo_total_componente = coef_val * preco_val * dados.quantidade
                 qtd_insumo_total = coef_val * dados.quantidade
                 
@@ -308,6 +309,9 @@ async def calcular_orcamento(dados: OrcamentoRequest):
                     "unidade": u_ins or "-",
                     "total": formatar_brl(custo_total_componente)
                 })
+                print(f"[{idx}] ✅ Sucesso! Insumo {c_ins} adicionado à composição {c_comp}")
+            else:
+                print(f"[{idx}] ⚠️ A chave '{c_comp}' não foi encontrada em composicoes_processadas.")
                 
         conn_ana.close()
 
