@@ -178,7 +178,6 @@ async def calcular_orcamento(dados: OrcamentoRequest):
     cursor = conn.cursor()
     
     # 1. Tratamento seguro das palavras-chave para busca flexível por múltiplos termos
-    # 1. Tratamento seguro das palavras-chave
     termos = dados.palavras_chave.strip().split()
     if not termos:
         conn.close()
@@ -256,25 +255,48 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         cursor_ana = conn_ana.cursor()
         
         placeholders = ",".join(["?"] * len(codigos_encontrados))
+        
+        # 🎯 Buscamos o insumo E o preço unitário dele para o regime correto, evitando auto-repetição
         query_ana = f"""
-            SELECT codigo_composicao, codigo_insumo, descricao_insumo, unidade_insumo, coeficiente
-            FROM analitico
-            WHERE codigo_composicao IN ({placeholders})
+            SELECT 
+                a.codigo_composicao, 
+                a.codigo_insumo, 
+                a.descricao_insumo, 
+                a.unidade_insumo, 
+                a.coeficiente,
+                i.preco_unitario
+            FROM analitico a
+            LEFT JOIN insumos i ON a.codigo_insumo = i.codigo AND i.regime = ?
+            WHERE a.codigo_composicao IN ({placeholders})
         """
-        cursor_ana.execute(query_ana, codigos_encontrados)
+        
+        # Parâmetros: primeiro o regime, depois os códigos das composições
+        parametros_ana = [regime_filtro] + codigos_encontrados
+        cursor_ana.execute(query_ana, parametros_ana)
         linhas_analiticas = cursor_ana.fetchall()
         conn_ana.close()
         
         for ana_row in linhas_analiticas:
-            c_comp, c_ins, d_ins, u_ins, coef = ana_row
+            c_comp, c_ins, d_ins, u_ins, coef, preco_unitario = ana_row
+            
+            # 1. CORREÇÃO: Ignora se a composição se repetir como insumo filho dela mesma
+            if c_ins == c_comp:
+                continue
+                
             if c_comp in composicoes_processadas:
                 coef_val = coef or 0.0
+                preco_val = preco_unitario or 0.0
+                
+                # 2. CORREÇÃO: Cálculo matemático real (Coeficiente * Preço Unitário * Quantidade da Obra)
+                custo_total_componente = coef_val * preco_val * dados.quantidade
                 qtd_insumo_total = coef_val * dados.quantidade
+                
                 composicoes_processadas[c_comp]["insumos"].append({
                     "nome": f"[{c_ins}] {d_ins}" if d_ins else f"[{c_ins}] Insumo Vinculado",
                     "qtd": qtd_insumo_total,
                     "unidade": u_ins or "-",
-                    "total": f"Coef: {coef_val:.4f}"
+                    # 3. CORREÇÃO: Valor monetário formatado em PT-BR
+                    "total": formatar_brl(custo_total_componente)
                 })
 
     dados_estruturados = list(composicoes_processadas.values())
@@ -376,4 +398,8 @@ async def calcular_orcamento(dados: OrcamentoRequest):
             "relatorio": "⚠️ O servidor de IA do Google está temporariamente sobrecarregado (Erro 503). Os dados técnicos e custos abaixo foram extraídos diretamente do banco oficial SINAPI com sucesso.",
             "composicoes": composicoes_fallback
         }
-    
+
+# --- FORMATAÇÃO DE QTD E CUSTOS PARA FORMATO BR ---
+def formatar_brl(valor: float) -> str:
+    """Formata um float para o padrão monetário brasileiro (ex: R$ 1.234,56)"""
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")    
