@@ -265,6 +265,8 @@ async def calcular_orcamento(dados: OrcamentoRequest):
         
         cursor_ana.execute(query_ana, codigos_encontrados)
         linhas_analiticas = cursor_ana.fetchall()
+
+        print(f"🔎 DEBUG ANALITICO: Total de linhas brutas encontradas na tabela analitico: {len(linhas_analiticas)}")
         
         for ana_row in linhas_analiticas:
             c_comp, c_ins, d_ins, u_ins, coef = ana_row
